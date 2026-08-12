@@ -1,0 +1,13 @@
+# Netlify config for the Kinora Next.js story player.
+# Ensures App Router SSR routes like /s/[code] hit the Next.js runtime
+# instead of Netlify's static CDN 404 page.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

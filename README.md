@@ -25,23 +25,31 @@ npm run dev
 
 Then open `http://localhost:3000/s/YOURCODE`.
 
-## Required backend
+## Deploy on Netlify
 
-1. Deploy the public edge function:
+1. Connect this `web-player` repo/folder as a Netlify site.
+2. Build settings are in `netlify.toml` (`npm run build`, publish `.next`, Next.js plugin).
+3. Set environment variables in **Netlify → Site settings → Environment variables**:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `SUPABASE_SERVICE_ROLE_KEY` (server-only)
+   - `NEXT_PUBLIC_APP_URL` (your Netlify URL or custom domain)
+4. Trigger a new deploy. Test: `https://YOUR-SITE.netlify.app/s/YOURCODE`
+
+If you see Netlify’s purple “Page not found”, the last deploy failed or env vars are missing — check **Deploys** logs, then redeploy.
+
+## Supabase
+
+1. Deploy the public edge function (optional if using service role in this app):
 
 ```bash
 cd kidz
 supabase functions deploy story-player --no-verify-jwt
 ```
 
-2. Point share links at wherever this player is hosted (`APP_BASE_URL` secret on `create-share-link`):
+2. Point share links at this player (`APP_BASE_URL` secret on `create-share-link`):
 
 ```text
-# local
-APP_BASE_URL=http://localhost:3000
-
-# production (after you deploy this player to the domain)
-APP_BASE_URL=https://hellokinora.com
+APP_BASE_URL=https://YOUR-SITE.netlify.app
+# or your custom domain, e.g. https://hellokinora.com
 ```
-
-Until this player is deployed to `hellokinora.com`, that domain will keep showing Apache’s 404. Use localhost for testing.

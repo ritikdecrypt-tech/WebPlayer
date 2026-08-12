@@ -210,7 +210,14 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
     .update({ view_count: (link.view_count ?? 0) + 1 })
     .eq("short_code", shortCode);
 
-  const childName = (story.child_profiles as { display_name: string }).display_name;
+  const childProfileRaw = story.child_profiles as
+    | { display_name: string }
+    | { display_name: string }[]
+    | null;
+  const childProfile = Array.isArray(childProfileRaw)
+    ? childProfileRaw[0]
+    : childProfileRaw;
+  const childName = childProfile?.display_name ?? "a child";
 
   return {
     story_id: story.id,
