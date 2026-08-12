@@ -1,5 +1,5 @@
 {
-  "name": "web-player",
+  "name": "kinora",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"

@@ -1,36 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Kinora story web player
 
-## Getting Started
+Next.js **player only** — not a website. Paste a shared story URL and the story plays full-screen.
 
-First, run the development server:
+Share links look like:
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```text
+https://hellokinora.com/s/{short_code}
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Locally:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000/s/{short_code}
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Run locally
 
-## Learn More
+```bash
+cd web-player
+cp .env.example .env.local   # same Supabase URL + anon key as the app
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Then open `http://localhost:3000/s/YOURCODE`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Required backend
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Deploy the public edge function:
 
-## Deploy on Vercel
+```bash
+cd kidz
+supabase functions deploy story-player --no-verify-jwt
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+2. Point share links at wherever this player is hosted (`APP_BASE_URL` secret on `create-share-link`):
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+# local
+APP_BASE_URL=http://localhost:3000
+
+# production (after you deploy this player to the domain)
+APP_BASE_URL=https://hellokinora.com
+```
+
+Until this player is deployed to `hellokinora.com`, that domain will keep showing Apache’s 404. Use localhost for testing.
