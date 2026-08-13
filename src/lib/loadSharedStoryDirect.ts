@@ -13,6 +13,21 @@ function titleFromNarration(text: string): string {
   return first.length > 48 ? `${first.slice(0, 45)}…` : first;
 }
 
+/** Free-tier shares show Kinora; paid Explorer/Family shares do not. */
+function watermarkForOwnerTier(
+  tier: string | null | undefined,
+  expiresAt: string | null | undefined,
+): boolean {
+  const normalized = (tier ?? "free").toLowerCase();
+  const paid = normalized === "explorer" || normalized === "family";
+  if (!paid) return true;
+  if (expiresAt) {
+    const expiresMs = Date.parse(expiresAt);
+    if (!Number.isNaN(expiresMs) && expiresMs <= Date.now()) return true;
+  }
+  return false;
+}
+
 /**
  * Loads a shared story directly from Supabase (service role).
  * Used when the remote `story-player` edge function hasn't been redeployed yet.
@@ -50,7 +65,7 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
   const { data: story, error: storyError } = await supabase
     .from("stories")
     .select(`
-      id, title, target_length, music_mood, music_track_id, status,
+      id, title, parent_id, target_length, music_mood, music_track_id, status,
       child_profiles!inner(display_name)
     `)
     .eq("id", link.story_id)
@@ -219,18 +234,21 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
     : childProfileRaw;
   const childName = childProfile?.display_name ?? "a child";
 
-  // Free always shows the Kinora watermark during playback. Family never
-  // gets that Free-tier mark. Explorer only gets it if the stored share-link
-  // setting already requires a watermark.
-  let showWatermark = link.show_watermark === true;
-  const { data: sub } = await supabase
-    .from("subscriptions")
-    .select("tier")
-    .eq("parent_id", link.parent_id)
-    .maybeSingle();
-  if (sub?.tier === "free") showWatermark = true;
-  else if (sub?.tier === "family") showWatermark = false;
-  else if (sub?.tier === "explorer") showWatermark = link.show_watermark === true;
+  // Playback-time check of the share owner's current plan. Free (and missing
+  // or expired paid rows) always get the Kinora watermark; Explorer/Family
+  // never do — even if an older share_links.show_watermark flag says otherwise.
+  const ownerId =
+    (typeof link.parent_id === "string" && link.parent_id) ||
+    (typeof story.parent_id === "string" && story.parent_id) ||
+    null;
+  const { data: sub } = ownerId
+    ? await supabase
+        .from("subscriptions")
+        .select("tier, expires_at")
+        .eq("parent_id", ownerId)
+        .maybeSingle()
+    : { data: null };
+  const showWatermark = watermarkForOwnerTier(sub?.tier, sub?.expires_at);
 
   return {
     story_id: story.id,

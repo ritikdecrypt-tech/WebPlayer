@@ -63,6 +63,7 @@ export default function StoryPlayer({ story }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isImmersive, setIsImmersive] = useState(false);
 
   const shellRef = useRef<HTMLDivElement | null>(null);
   const narrationRef = useRef<HTMLAudioElement | null>(null);
@@ -377,158 +378,196 @@ export default function StoryPlayer({ story }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsImmersive(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const expanded = isFullscreen || isImmersive;
+
   const toggleFullscreen = useCallback(async () => {
     const shell = shellRef.current;
     if (!shell) return;
     try {
-      if (getFullscreenElement()) {
-        await exitDocumentFullscreen();
-      } else {
-        await requestElementFullscreen(shell);
+      if (getFullscreenElement() || isImmersive) {
+        if (getFullscreenElement()) await exitDocumentFullscreen();
+        setIsImmersive(false);
+        return;
+      }
+      await requestElementFullscreen(shell);
+      if (getFullscreenElement() !== shell) {
+        setIsImmersive(true);
       }
     } catch {
-      // Browser denied or the user dismissed the prompt — stay in page view.
+      setIsImmersive(true);
     }
-  }, []);
+  }, [isImmersive]);
 
   if (!current) {
     return (
-      <div className="player-shell centered">
-        <p className="muted">This story has no scenes yet.</p>
+      <div className="player-stage">
+        <div className="player-shell centered">
+          <p className="muted">This story has no scenes yet.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="player-shell" ref={shellRef}>
+    <div className={`player-stage${expanded ? " is-expanded" : ""}`}>
       <div
-        className="cinema"
-        onClick={() => {
-          if (!isPlaying && !finished) {
-            play();
-            return;
-          }
-          if (controlsVisible) setControlsVisible(false);
-          else showControls();
-        }}
+        className={`player-shell${isImmersive ? " immersive" : ""}`}
+        ref={shellRef}
       >
-        {activeImage && !imageFailed ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            key={activeImage}
-            src={activeImage}
-            alt={current.title || story.title || "Story scene"}
-            className="scene-image"
-            onError={() => setImageFailed(true)}
-          />
-        ) : (
-          <div className="scene-placeholder" aria-hidden />
-        )}
-
-        {current.motion_video_url && isPlaying && (
-          <video
-            key={current.motion_video_url}
-            className="scene-motion"
-            src={current.motion_video_url}
-            autoPlay
-            muted
-            loop
-            playsInline
-            disablePictureInPicture
-            controlsList="nofullscreen"
-          />
-        )}
-
-        <div className="cinema-veil top" />
-        <div className="cinema-veil bottom" />
-
-        <header
-          className={`chrome top-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="brand-mark">Kinora</div>
-          <div className="scene-meta">
-            <span>
-              {story.title || current.title}
-              {story.child_name ? ` · ${story.child_name}` : ""}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="ghost-btn"
-            onClick={() => setRateIndex((r) => (r + 1) % RATES.length)}
-            aria-label="Change playback speed"
-          >
-            {RATES[rateIndex]}x
-          </button>
-          <button
-            type="button"
-            className="ghost-btn fullscreen-btn"
-            onClick={() => {
-              showControls();
-              void toggleFullscreen();
-            }}
-            aria-label={isFullscreen ? "Exit full screen" : "Full screen"}
-          >
-            {isFullscreen ? "Exit" : "Full Screen"}
-          </button>
-        </header>
-
         <div
-          className={`chrome center-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
-          onClick={(e) => e.stopPropagation()}
+          className="cinema"
+          onClick={() => {
+            if (!isPlaying && !finished) {
+              play();
+              return;
+            }
+            if (controlsVisible) setControlsVisible(false);
+            else showControls();
+          }}
         >
-          <button
-            type="button"
-            className="play-fab"
-            onClick={() => {
-              if (finished) replay();
-              else toggle();
-            }}
-            aria-label={isPlaying ? "Pause" : "Play"}
+          {activeImage && !imageFailed ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={activeImage}
+              src={activeImage}
+              alt={current.title || story.title || "Story scene"}
+              className="scene-image"
+              onError={() => setImageFailed(true)}
+            />
+          ) : (
+            <div className="scene-placeholder" aria-hidden />
+          )}
+
+          {current.motion_video_url && isPlaying && (
+            <video
+              key={current.motion_video_url}
+              className="scene-motion"
+              src={current.motion_video_url}
+              autoPlay
+              muted
+              loop
+              playsInline
+              disablePictureInPicture
+              controlsList="nofullscreen"
+            />
+          )}
+
+          <div className="cinema-veil top" />
+          <div className="cinema-veil bottom" />
+
+          <header
+            className={`chrome top-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
+            onClick={(e) => e.stopPropagation()}
           >
-            {isPlaying ? "❚❚" : "▶"}
-          </button>
+            <div className="brand-mark">Kinora</div>
+            <div className="scene-meta">
+              <span>
+                {story.title || current.title}
+                {story.child_name ? ` · ${story.child_name}` : ""}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => setRateIndex((r) => (r + 1) % RATES.length)}
+              aria-label="Change playback speed"
+            >
+              {RATES[rateIndex]}x
+            </button>
+          </header>
+
+          <div
+            className={`chrome center-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="play-fab"
+              onClick={() => {
+                if (finished) replay();
+                else toggle();
+              }}
+              aria-label={isPlaying ? "Pause" : "Play"}
+            >
+              {isPlaying ? "❚❚" : "▶"}
+            </button>
+          </div>
+
+          <footer
+            className={`chrome bottom-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="caption">{sanitizeForSpeech(current.text)}</p>
+            <div className="progress-row">
+              <span className="clock">{formatClockTime(elapsedDurationMs)}</span>
+              <div className="progress-track" aria-hidden>
+                {scenes.map((_, i) => {
+                  const fill = i < index ? 1 : i === index ? progress : 0;
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      className="progress-seg"
+                      onClick={() => goTo(i)}
+                      aria-label={`Go to scene ${i + 1}`}
+                    >
+                      <span style={{ width: `${fill * 100}%` }} />
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="clock">{formatClockTime(totalDurationMs)}</span>
+              <span className="counter">
+                {index + 1}/{scenes.length}
+              </span>
+            </div>
+          </footer>
+
+          {story.show_watermark && !finished && (
+            <div className="watermark" aria-hidden>
+              Kinora
+            </div>
+          )}
         </div>
 
-        <footer
-          className={`chrome bottom-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
-          onClick={(e) => e.stopPropagation()}
+        {finished && <EndCard onReplay={replay} />}
+
+        <button
+          type="button"
+          className="fullscreen-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            showControls();
+            void toggleFullscreen();
+          }}
+          aria-label={expanded ? "Exit full screen" : "Full screen"}
+          title={expanded ? "Exit full screen" : "Full screen"}
         >
-          <p className="caption">{sanitizeForSpeech(current.text)}</p>
-          <div className="progress-row">
-            <span className="clock">{formatClockTime(elapsedDurationMs)}</span>
-            <div className="progress-track" aria-hidden>
-              {scenes.map((_, i) => {
-                const fill = i < index ? 1 : i === index ? progress : 0;
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    className="progress-seg"
-                    onClick={() => goTo(i)}
-                    aria-label={`Go to scene ${i + 1}`}
-                  >
-                    <span style={{ width: `${fill * 100}%` }} />
-                  </button>
-                );
-              })}
-            </div>
-            <span className="clock">{formatClockTime(totalDurationMs)}</span>
-            <span className="counter">
-              {index + 1}/{scenes.length}
-            </span>
-          </div>
-        </footer>
-
-        {story.show_watermark && !finished && (
-          <div className="watermark" aria-hidden>
-            Kinora
-          </div>
-        )}
+          {expanded ? (
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M9 3v2H5.8L9 8.2 7.6 9.6 4 6V9H2V3h7Zm6 0h7v6h-2V6l-3.6 3.6L15 8.2 18.2 5H15V3ZM4 15h2v3.2L9.2 15l1.4 1.4L7 20h3v2H3v-7Zm13.6-1.4L21 17.2V14h2v7h-7v-2h3.2L14.6 15l1.4-1.4Z"
+                fill="currentColor"
+              />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                d="M3 3h7v2H5.8L9 8.2 7.6 9.6 4 6v4.2H2V3h1Zm12 0h7v7h-2V5.8L15.8 9 14.4 7.6 18 4h-3V3ZM3 14h2v4.2L8.2 15l1.4 1.4L6 20h4.2v2H3v-8Zm16 0h2v8h-8v-2H18l-3.2-3.2 1.4-1.4L20 18.2V14Z"
+                fill="currentColor"
+              />
+            </svg>
+          )}
+        </button>
       </div>
-
-      {finished && <EndCard childName={story.child_name} />}
     </div>
   );
 }
