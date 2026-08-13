@@ -16,6 +16,11 @@ export type PlayerScene = {
   audio_url: string | null;
 };
 
+export type StoryDedication = {
+  recipients: string[];
+  note: string | null;
+};
+
 export type SharedStory = {
   story_id: string;
   title: string | null;
@@ -25,6 +30,7 @@ export type SharedStory = {
   music_url: string | null;
   show_watermark: boolean;
   show_trial_cta: boolean;
+  dedication: StoryDedication;
   /** Share-link short_code — also the referral slug for EndCard / track-referral. */
   referral_slug: string;
   scenes: PlayerScene[];

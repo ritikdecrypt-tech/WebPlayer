@@ -8,6 +8,7 @@ import {
   sanitizeForSpeech,
 } from "@/lib/playback";
 import EndCard from "@/components/EndCard";
+import DedicationCard from "@/components/DedicationCard";
 
 const MUSIC_VOLUME = 0.22;
 const RATES = [0.85, 1, 1.15] as const;
@@ -64,6 +65,7 @@ export default function StoryPlayer({ story }: Props) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isImmersive, setIsImmersive] = useState(false);
+  const [showDedication, setShowDedication] = useState(true);
 
   const shellRef = useRef<HTMLDivElement | null>(null);
   const narrationRef = useRef<HTMLAudioElement | null>(null);
@@ -308,8 +310,21 @@ export default function StoryPlayer({ story }: Props) {
     setIndex(0);
     setProgress(0);
     setImageFailed(false);
-    speakScene(0);
-  }, [speakScene]);
+    teardownNarration();
+    setIsPlaying(false);
+    setShowDedication(true);
+  }, [teardownNarration]);
+
+  const startAfterDedication = useCallback(() => {
+    setShowDedication(false);
+    play();
+  }, [play]);
+
+  useEffect(() => {
+    if (!showDedication) return;
+    const timer = window.setTimeout(() => startAfterDedication(), 4500);
+    return () => window.clearTimeout(timer);
+  }, [showDedication, startAfterDedication]);
 
   // Background music
   useEffect(() => {
@@ -425,7 +440,8 @@ export default function StoryPlayer({ story }: Props) {
         <div
           className="cinema"
           onClick={() => {
-            if (!isPlaying && !finished) {
+            if (showDedication || finished) return;
+            if (!isPlaying) {
               play();
               return;
             }
@@ -464,7 +480,9 @@ export default function StoryPlayer({ story }: Props) {
           <div className="cinema-veil bottom" />
 
           <header
-            className={`chrome top-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
+            className={`chrome top-chrome ${
+              !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
+            }`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="brand-mark">Kinora</div>
@@ -485,7 +503,9 @@ export default function StoryPlayer({ story }: Props) {
           </header>
 
           <div
-            className={`chrome center-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
+            className={`chrome center-chrome ${
+              !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
+            }`}
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -502,7 +522,9 @@ export default function StoryPlayer({ story }: Props) {
           </div>
 
           <footer
-            className={`chrome bottom-chrome ${controlsVisible || !isPlaying ? "visible" : "hidden"}`}
+            className={`chrome bottom-chrome ${
+              !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
+            }`}
             onClick={(e) => e.stopPropagation()}
           >
             <p className="caption">{sanitizeForSpeech(current.text)}</p>
@@ -531,12 +553,21 @@ export default function StoryPlayer({ story }: Props) {
             </div>
           </footer>
 
-          {story.show_watermark && !finished && (
+          {story.show_watermark && !finished && !showDedication && (
             <div className="watermark" aria-hidden>
-              Kinora
+              <span>Kinora</span>
             </div>
           )}
         </div>
+
+        {showDedication && !finished && (
+          <DedicationCard
+            childName={story.child_name}
+            recipients={story.dedication?.recipients ?? []}
+            note={story.dedication?.note ?? null}
+            onBegin={startAfterDedication}
+          />
+        )}
 
         {finished && <EndCard onReplay={replay} />}
 

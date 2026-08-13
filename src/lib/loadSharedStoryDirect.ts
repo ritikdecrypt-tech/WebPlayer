@@ -1,5 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
-import type { PlayerScene, PlayerShot, SharedStory, ShotType } from "./types";
+import type {
+  PlayerScene,
+  PlayerShot,
+  SharedStory,
+  ShotType,
+  StoryDedication,
+} from "./types";
 import { StoryPlayerFetchError, isValidShortCode } from "./storyPlayer";
 
 const ILLUSTRATIONS_BUCKET = "illustrations";
@@ -26,6 +32,22 @@ function watermarkForOwnerTier(
     if (!Number.isNaN(expiresMs) && expiresMs <= Date.now()) return true;
   }
   return false;
+}
+
+function parseDedication(raw: unknown): StoryDedication {
+  if (!raw || typeof raw !== "object") return { recipients: [], note: null };
+  const obj = raw as Record<string, unknown>;
+  const recipients: string[] = [];
+  if (Array.isArray(obj.recipients)) {
+    for (const row of obj.recipients) {
+      if (!row || typeof row !== "object") continue;
+      const name = (row as { name?: unknown }).name;
+      if (typeof name === "string" && name.trim()) recipients.push(name.trim());
+    }
+  }
+  const note =
+    typeof obj.note === "string" && obj.note.trim() ? obj.note.trim() : null;
+  return { recipients, note };
 }
 
 /**
@@ -65,7 +87,7 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
   const { data: story, error: storyError } = await supabase
     .from("stories")
     .select(`
-      id, title, parent_id, target_length, music_mood, music_track_id, status,
+      id, title, parent_id, dedication, target_length, music_mood, music_track_id, status,
       child_profiles!inner(display_name)
     `)
     .eq("id", link.story_id)
@@ -244,11 +266,17 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
   const { data: sub } = ownerId
     ? await supabase
         .from("subscriptions")
-        .select("tier, expires_at")
+        .select("tier, tier_v2, expires_at")
         .eq("parent_id", ownerId)
         .maybeSingle()
     : { data: null };
-  const showWatermark = watermarkForOwnerTier(sub?.tier, sub?.expires_at);
+  const subTier =
+    (sub && typeof sub.tier === "string" && sub.tier) ||
+    (sub && typeof sub.tier_v2 === "string" && sub.tier_v2) ||
+    null;
+  const subExpires =
+    sub && typeof sub.expires_at === "string" ? sub.expires_at : null;
+  const showWatermark = watermarkForOwnerTier(subTier, subExpires);
 
   return {
     story_id: story.id,
@@ -259,6 +287,9 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
     music_url: musicUrl,
     show_watermark: showWatermark,
     show_trial_cta: link.show_trial_cta,
+    dedication: parseDedication(
+      "dedication" in story ? story.dedication : null,
+    ),
     referral_slug: shortCode,
     scenes,
   };
