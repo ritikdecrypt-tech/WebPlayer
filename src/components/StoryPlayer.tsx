@@ -7,9 +7,47 @@ import {
   formatClockTime,
   sanitizeForSpeech,
 } from "@/lib/playback";
+import EndCard from "@/components/EndCard";
 
 const MUSIC_VOLUME = 0.22;
 const RATES = [0.85, 1, 1.15] as const;
+
+type FullscreenDocument = Document & {
+  webkitFullscreenEnabled?: boolean;
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+};
+
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
+function getFullscreenElement(): Element | null {
+  const doc = document as FullscreenDocument;
+  return document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+}
+
+async function requestElementFullscreen(el: HTMLElement): Promise<void> {
+  if (el.requestFullscreen) {
+    await el.requestFullscreen();
+    return;
+  }
+  const webkitEl = el as FullscreenElement;
+  if (webkitEl.webkitRequestFullscreen) {
+    await webkitEl.webkitRequestFullscreen();
+  }
+}
+
+async function exitDocumentFullscreen(): Promise<void> {
+  if (document.exitFullscreen && document.fullscreenElement) {
+    await document.exitFullscreen();
+    return;
+  }
+  const doc = document as FullscreenDocument;
+  if (doc.webkitExitFullscreen && doc.webkitFullscreenElement) {
+    await doc.webkitExitFullscreen();
+  }
+}
 
 type Props = {
   story: SharedStory;
@@ -24,7 +62,9 @@ export default function StoryPlayer({ story }: Props) {
   const [rateIndex, setRateIndex] = useState(1);
   const [imageFailed, setImageFailed] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const narrationRef = useRef<HTMLAudioElement | null>(null);
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -312,6 +352,45 @@ export default function StoryPlayer({ story }: Props) {
     setImageFailed(false);
   }, [activeImage]);
 
+  // Keep the share/referral slug in the address bar for the whole playback
+  // session so the End Card CTA and any copied URL still carry it. The
+  // slug is the story's unique share short_code — same value track-referral
+  // looks up — and is also present on the inbound share URL as `?ref=`.
+  useEffect(() => {
+    if (!story.referral_slug || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("ref") === story.referral_slug) return;
+    url.searchParams.set("ref", story.referral_slug);
+    window.history.replaceState({}, "", url);
+  }, [story.referral_slug]);
+
+  // Native Fullscreen API only — never request on load, story start, or URL open.
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(getFullscreenElement() === shellRef.current);
+    };
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    try {
+      if (getFullscreenElement()) {
+        await exitDocumentFullscreen();
+      } else {
+        await requestElementFullscreen(shell);
+      }
+    } catch {
+      // Browser denied or the user dismissed the prompt — stay in page view.
+    }
+  }, []);
+
   if (!current) {
     return (
       <div className="player-shell centered">
@@ -321,7 +400,7 @@ export default function StoryPlayer({ story }: Props) {
   }
 
   return (
-    <div className="player-shell">
+    <div className="player-shell" ref={shellRef}>
       <div
         className="cinema"
         onClick={() => {
@@ -355,6 +434,8 @@ export default function StoryPlayer({ story }: Props) {
             muted
             loop
             playsInline
+            disablePictureInPicture
+            controlsList="nofullscreen"
           />
         )}
 
@@ -379,6 +460,17 @@ export default function StoryPlayer({ story }: Props) {
             aria-label="Change playback speed"
           >
             {RATES[rateIndex]}x
+          </button>
+          <button
+            type="button"
+            className="ghost-btn fullscreen-btn"
+            onClick={() => {
+              showControls();
+              void toggleFullscreen();
+            }}
+            aria-label={isFullscreen ? "Exit full screen" : "Full screen"}
+          >
+            {isFullscreen ? "Exit" : "Full Screen"}
           </button>
         </header>
 
@@ -429,24 +521,14 @@ export default function StoryPlayer({ story }: Props) {
           </div>
         </footer>
 
-        {story.show_watermark && (
+        {story.show_watermark && !finished && (
           <div className="watermark" aria-hidden>
-            Made with Kinora
+            Kinora
           </div>
         )}
       </div>
 
-      {finished && (
-        <div className="end-card" role="dialog" aria-label="Story finished">
-          <div className="end-card-inner">
-            <p className="eyebrow">The end</p>
-            <h2>{story.title || "Story"}</h2>
-            <button type="button" className="primary-btn" onClick={replay}>
-              Play again
-            </button>
-          </div>
-        </div>
-      )}
+      {finished && <EndCard childName={story.child_name} />}
     </div>
   );
 }

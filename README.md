@@ -5,8 +5,10 @@ Next.js **player only** — not a website. Paste a shared story URL and the stor
 Share links look like:
 
 ```text
-https://hellokinora.com/s/{short_code}
+https://hellokinora.com/s/{short_code}?ref={short_code}
 ```
+
+Anyone with the link can watch in a browser — no Kinora app or account. Free-tier shares always show the Kinora watermark; Family shares do not. The `ref` query param is the story's unique share code and is kept through playback so the End Card can credit the referrer.
 
 Locally:
 

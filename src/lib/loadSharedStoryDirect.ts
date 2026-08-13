@@ -36,7 +36,7 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
 
   const { data: link, error: linkError } = await supabase
     .from("share_links")
-    .select("story_id, is_active, show_watermark, show_trial_cta, view_count")
+    .select("story_id, parent_id, is_active, show_watermark, show_trial_cta, view_count")
     .eq("short_code", shortCode)
     .maybeSingle();
 
@@ -219,6 +219,19 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
     : childProfileRaw;
   const childName = childProfile?.display_name ?? "a child";
 
+  // Free always shows the Kinora watermark during playback. Family never
+  // gets that Free-tier mark. Explorer only gets it if the stored share-link
+  // setting already requires a watermark.
+  let showWatermark = link.show_watermark === true;
+  const { data: sub } = await supabase
+    .from("subscriptions")
+    .select("tier")
+    .eq("parent_id", link.parent_id)
+    .maybeSingle();
+  if (sub?.tier === "free") showWatermark = true;
+  else if (sub?.tier === "family") showWatermark = false;
+  else if (sub?.tier === "explorer") showWatermark = link.show_watermark === true;
+
   return {
     story_id: story.id,
     title: story.title,
@@ -226,7 +239,7 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
     length: story.target_length,
     music_mood: story.music_mood,
     music_url: musicUrl,
-    show_watermark: link.show_watermark,
+    show_watermark: showWatermark,
     show_trial_cta: link.show_trial_cta,
     referral_slug: shortCode,
     scenes,

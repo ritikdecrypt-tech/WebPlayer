@@ -25,6 +25,7 @@ export type SharedStory = {
   music_url: string | null;
   show_watermark: boolean;
   show_trial_cta: boolean;
+  /** Share-link short_code — also the referral slug for EndCard / track-referral. */
   referral_slug: string;
   scenes: PlayerScene[];
 };
