@@ -286,8 +286,8 @@ body {
   font-weight: 500;
   font-size: clamp(2.8rem, 10vw, 5rem);
   letter-spacing: 0.08em;
-  color: rgba(255, 252, 246, 0.38);
-  text-shadow: 0 2px 18px rgba(14, 13, 12, 0.28);
+  color: rgba(255, 252, 246, 0.62);
+  text-shadow: 0 1px 12px rgba(14, 13, 12, 0.42);
   white-space: nowrap;
 }
 
@@ -487,9 +487,10 @@ body {
 }
 
 .endcard-replay-icon {
-  width: 58px;
-  height: 58px;
+  width: 64px;
+  height: 64px;
   color: var(--cream);
+  overflow: visible;
   filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.35));
 }
 

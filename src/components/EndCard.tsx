@@ -19,24 +19,24 @@ export default function EndCard({ onReplay }: Props) {
           <span className="endcard-art art-wash rose" aria-hidden>
             <svg
               className="endcard-replay-icon"
-              viewBox="0 0 24 24"
+              viewBox="0 0 48 48"
               fill="none"
             >
               <path
-                d="M7.2 7.2A6.8 6.8 0 1 1 5.4 12"
+                d="M40 24a16 16 0 1 1-4.69-11.31"
                 stroke="currentColor"
-                strokeWidth="1.8"
+                strokeWidth="2.6"
                 strokeLinecap="round"
               />
               <path
-                d="M7.2 3.6v4.2H3"
+                d="M40 8.8v9.4h-9.4"
                 stroke="currentColor"
-                strokeWidth="1.8"
+                strokeWidth="2.6"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
               <path
-                d="M9.4 12.1 15 8.8v6.6L9.4 12.1Z"
+                d="M19.6 16.2c0-.7.76-1.14 1.37-.79l12.05 6.8a.9.9 0 0 1 0 1.58l-12.05 6.8a.9.9 0 0 1-1.37-.79V16.2Z"
                 fill="currentColor"
               />
             </svg>
