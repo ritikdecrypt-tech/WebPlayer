@@ -22,10 +22,12 @@ body {
   background: var(--cinema);
   color: var(--cream);
   font-family: var(--font-body);
+  overscroll-behavior: none;
 }
 
 .player-stage {
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
   display: flex;
   align-items: center;
@@ -36,8 +38,10 @@ body {
 
 .player-shell {
   position: relative;
-  width: min(1080px, 100%);
-  height: min(72vh, 640px);
+  /* 16:9 boxed player — width-capped so height never blows past the viewport */
+  width: min(1080px, 100%, calc(min(72vh, 640px) * 16 / 9));
+  aspect-ratio: 16 / 9;
+  height: auto;
   background: var(--cinema);
   border-radius: 16px;
   overflow: hidden;
@@ -52,10 +56,8 @@ body {
 }
 
 .cinema {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 100%;
+  position: absolute;
+  inset: 0;
   background: var(--cinema-panel);
   overflow: hidden;
   cursor: pointer;
@@ -69,6 +71,12 @@ body {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.cinema.is-expanded .scene-image,
+.cinema.is-expanded .scene-motion {
+  object-fit: contain;
+  object-position: center;
 }
 
 .scene-placeholder {
@@ -300,8 +308,11 @@ body {
 .player-shell.immersive {
   width: 100%;
   height: 100%;
+  height: -webkit-fill-available;
+  height: 100dvh;
   min-height: 100%;
   max-width: none;
+  aspect-ratio: auto;
   border-radius: 0;
   box-shadow: none;
   background: var(--cinema);
@@ -318,6 +329,12 @@ body {
 .player-shell.immersive .cinema {
   min-height: 100%;
   height: 100%;
+}
+
+@media (max-width: 768px) {
+  .player-stage:not(.is-expanded) {
+    padding: 20px 16px;
+  }
 }
 
 .dedication-card {

@@ -50,6 +50,12 @@ async function exitDocumentFullscreen(): Promise<void> {
   }
 }
 
+/** Phones: CSS portrait overlay instead of native Fullscreen (which often rotates to landscape). */
+function prefersPortraitCssFullscreen(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(max-width: 768px), (pointer: coarse) and (hover: none)").matches;
+}
+
 type Props = {
   story: SharedStory;
 };
@@ -403,6 +409,20 @@ export default function StoryPlayer({ story }: Props) {
 
   const expanded = isFullscreen || isImmersive;
 
+  useEffect(() => {
+    if (!isImmersive) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+    };
+  }, [isImmersive]);
+
   const toggleFullscreen = useCallback(async () => {
     const shell = shellRef.current;
     if (!shell) return;
@@ -410,6 +430,12 @@ export default function StoryPlayer({ story }: Props) {
       if (getFullscreenElement() || isImmersive) {
         if (getFullscreenElement()) await exitDocumentFullscreen();
         setIsImmersive(false);
+        return;
+      }
+      // Mobile: stay in portrait and fill the phone. Native Fullscreen API
+      // often forces landscape and is unreliable on iOS for non-video nodes.
+      if (prefersPortraitCssFullscreen()) {
+        setIsImmersive(true);
         return;
       }
       await requestElementFullscreen(shell);
@@ -438,7 +464,7 @@ export default function StoryPlayer({ story }: Props) {
         ref={shellRef}
       >
         <div
-          className="cinema"
+          className={`cinema${expanded ? " is-expanded" : ""}`}
           onClick={() => {
             if (showDedication || finished) return;
             if (!isPlaying) {
