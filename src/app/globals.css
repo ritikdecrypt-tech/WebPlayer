@@ -157,6 +157,12 @@ body {
   inset: 0;
   display: grid;
   place-items: center;
+  /* Let taps reach top/bottom chrome; only the FAB captures pointer events. */
+  pointer-events: none;
+}
+
+.center-chrome.visible {
+  pointer-events: none;
 }
 
 .play-fab {
@@ -169,6 +175,11 @@ body {
   font-size: 1.3rem;
   cursor: pointer;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  pointer-events: auto;
 }
 
 .bottom-chrome {

@@ -12,7 +12,38 @@ import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
 
 const MUSIC_VOLUME = 0.22;
+/** Playback speed options — index 1 is normal (1x). Never auto-advance this. */
 const RATES = [0.85, 1, 1.15] as const;
+const DEFAULT_RATE_INDEX = 1;
+
+function isCoarsePointerDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(pointer: coarse), (hover: none)").matches;
+}
+
+/** Fresh Audio element tuned for iOS Safari (autoplay + inline playback). */
+function createNarrationAudio(url: string, rate: number): HTMLAudioElement {
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.crossOrigin = "anonymous";
+  // iOS treats media without playsinline more like fullscreen video and can
+  // block/interrupt programmatic pause/play.
+  audio.setAttribute("playsinline", "true");
+  audio.setAttribute("webkit-playsinline", "true");
+  audio.src = url;
+  // Apply rate after metadata so WebKit doesn't drop or clamp the value.
+  const applyRate = () => {
+    audio.playbackRate = rate;
+    try {
+      (audio as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
+    } catch {
+      /* older WebKit */
+    }
+  };
+  if (audio.readyState >= 1) applyRate();
+  else audio.addEventListener("loadedmetadata", applyRate, { once: true });
+  return audio;
+}
 
 type FullscreenDocument = Document & {
   webkitFullscreenEnabled?: boolean;
@@ -67,7 +98,7 @@ export default function StoryPlayer({ story }: Props) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [finished, setFinished] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [rateIndex, setRateIndex] = useState(1);
+  const [rateIndex, setRateIndex] = useState(DEFAULT_RATE_INDEX);
   const [imageFailed, setImageFailed] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -82,8 +113,12 @@ export default function StoryPlayer({ story }: Props) {
   const hideControlsTimerRef = useRef<number | null>(null);
   const indexRef = useRef(0);
   const isPlayingRef = useRef(false);
-  const rateRef = useRef<number>(RATES[1]);
+  const rateRef = useRef<number>(RATES[DEFAULT_RATE_INDEX]);
   const speakGenRef = useRef(0);
+  /** Generation id belonging to the active narration HTMLAudioElement — pause must NOT bump this or ontimeupdate/onended die after resume (iOS play/pause break). */
+  const narrationGenRef = useRef(0);
+  const usingTtsRef = useRef(false);
+  const audioUnlockedRef = useRef(false);
   const endingFadeIntervalRef = useRef<number | null>(null);
   const endingTailActiveRef = useRef(false);
   const endingTailRemainingMsRef = useRef(ENDING_TAIL_MS);
@@ -137,6 +172,8 @@ export default function StoryPlayer({ story }: Props) {
       audio.load();
       narrationRef.current = null;
     }
+    narrationGenRef.current = -1;
+    usingTtsRef.current = false;
     stopSpeech();
     clearProgressTimer();
     clearEndingFade();
@@ -155,6 +192,39 @@ export default function StoryPlayer({ story }: Props) {
     endingTailRemainingMsRef.current = ENDING_TAIL_MS;
     restoreMusicVolume();
   }, [clearEndingFade, restoreMusicVolume]);
+
+  /** Prime HTMLAudio + speechSynthesis inside a real user gesture (required on iOS Safari). */
+  const unlockAudio = useCallback(() => {
+    if (audioUnlockedRef.current) return;
+    audioUnlockedRef.current = true;
+
+    const music = musicRef.current;
+    if (music) {
+      const prevVol = music.volume;
+      music.volume = 0;
+      music.play()
+        .then(() => {
+          music.pause();
+          music.currentTime = 0;
+          music.volume = prevVol || MUSIC_VOLUME;
+        })
+        .catch(() => {
+          music.volume = prevVol || MUSIC_VOLUME;
+        });
+    }
+
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      try {
+        const warm = new SpeechSynthesisUtterance(" ");
+        warm.volume = 0;
+        warm.rate = 1;
+        window.speechSynthesis.speak(warm);
+        window.speechSynthesis.cancel();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
 
   const completeEndingTail = useCallback(() => {
     clearEndingFade();
@@ -230,6 +300,7 @@ export default function StoryPlayer({ story }: Props) {
 
   const speakWithDeviceTts = useCallback(
     (text: string, gen: number) => {
+      usingTtsRef.current = true;
       if (typeof window === "undefined" || !window.speechSynthesis) {
         const duration = estimateSpeechDurationMs(text, rateRef.current);
         const started = Date.now();
@@ -284,6 +355,7 @@ export default function StoryPlayer({ story }: Props) {
       const gen = ++speakGenRef.current;
       teardownNarration();
       cancelEndingTail();
+      usingTtsRef.current = false;
       setProgress(0);
       setIsPlaying(true);
       setFinished(false);
@@ -296,30 +368,50 @@ export default function StoryPlayer({ story }: Props) {
       const spoken = sanitizeForSpeech(scene.text);
 
       if (scene.audio_url) {
-        const audio = new Audio(scene.audio_url);
-        audio.playbackRate = rateRef.current;
+        const audio = createNarrationAudio(scene.audio_url, rateRef.current);
         narrationRef.current = audio;
+        narrationGenRef.current = gen;
 
         audio.ontimeupdate = () => {
-          if (speakGenRef.current !== gen) return;
+          // Use narrationGenRef so pause/resume does not kill progress updates.
+          if (narrationGenRef.current !== gen) return;
           if (audio.duration > 0) {
             setProgress(Math.min(1, audio.currentTime / audio.duration));
           }
         };
         audio.onended = () => {
-          if (speakGenRef.current !== gen) return;
+          if (narrationGenRef.current !== gen) return;
           setProgress(1);
           advanceOrFinish();
         };
         audio.onerror = () => {
-          if (speakGenRef.current !== gen) return;
+          if (narrationGenRef.current !== gen) return;
           console.warn("[StoryPlayer] narration audio failed — falling back to TTS");
           speakWithDeviceTts(spoken, gen);
         };
-        audio.play().catch(() => {
-          if (speakGenRef.current !== gen) return;
-          speakWithDeviceTts(spoken, gen);
-        });
+        void audio.play().then(
+          () => {
+            // Ensure rate stuck at the chosen value after play starts (WebKit quirk).
+            audio.playbackRate = rateRef.current;
+          },
+          (err: unknown) => {
+            if (narrationGenRef.current !== gen) return;
+            const name =
+              err && typeof err === "object" && "name" in err
+                ? String((err as { name: string }).name)
+                : "";
+            // Autoplay blocked — leave the play button ready; do NOT swap to
+            // TTS (speechSynthesis is also gesture-gated and sounds too fast
+            // on many iPhones).
+            if (name === "NotAllowedError") {
+              setIsPlaying(false);
+              showControls();
+              return;
+            }
+            console.warn("[StoryPlayer] narration play failed — falling back to TTS", err);
+            speakWithDeviceTts(spoken, gen);
+          },
+        );
         return;
       }
 
@@ -331,6 +423,7 @@ export default function StoryPlayer({ story }: Props) {
 
   const play = useCallback(() => {
     if (scenes.length === 0) return;
+    unlockAudio();
     if (endingTailActiveRef.current) {
       beginEndingTail(endingTailRemainingMsRef.current);
       showControls();
@@ -339,17 +432,22 @@ export default function StoryPlayer({ story }: Props) {
     if (
       narrationRef.current &&
       narrationRef.current.paused &&
-      !narrationRef.current.ended
+      !narrationRef.current.ended &&
+      !usingTtsRef.current
     ) {
       setIsPlaying(true);
       setFinished(false);
-      narrationRef.current.play().catch(() => {});
+      narrationRef.current.playbackRate = rateRef.current;
+      void narrationRef.current.play().catch(() => {
+        // Still blocked — keep UI on play so the user can try again.
+        setIsPlaying(false);
+      });
       musicRef.current?.play().catch(() => {});
       showControls();
       return;
     }
     speakScene(indexRef.current);
-  }, [scenes.length, speakScene, showControls, beginEndingTail]);
+  }, [scenes.length, speakScene, showControls, beginEndingTail, unlockAudio]);
 
   const pause = useCallback(() => {
     if (endingTailActiveRef.current) {
@@ -359,8 +457,18 @@ export default function StoryPlayer({ story }: Props) {
       showControls();
       return;
     }
+    // HTML narration: pause in place. Do NOT bump speakGenRef / narrationGenRef
+    // or ontimeupdate/onended become dead after resume (classic iOS "play does
+    // nothing" / stuck-at-end bug).
+    if (narrationRef.current && !usingTtsRef.current) {
+      narrationRef.current.pause();
+      musicRef.current?.pause();
+      setIsPlaying(false);
+      showControls();
+      return;
+    }
+    // TTS path cannot true-pause on iOS — cancel and restart on next play.
     speakGenRef.current++;
-    narrationRef.current?.pause();
     stopSpeech();
     clearProgressTimer();
     clearEndingFade();
@@ -370,9 +478,21 @@ export default function StoryPlayer({ story }: Props) {
   }, [stopSpeech, clearProgressTimer, clearEndingFade, showControls]);
 
   const toggle = useCallback(() => {
-    if (isPlaying) pause();
+    // Read the ref so rapid double-taps on iOS don't both see the same stale
+    // React state and no-op / double-flip.
+    if (isPlayingRef.current) pause();
     else play();
-  }, [isPlaying, pause, play]);
+  }, [pause, play]);
+
+  const setPlaybackRateIndex = useCallback((nextIndex: number) => {
+    const clamped = ((nextIndex % RATES.length) + RATES.length) % RATES.length;
+    setRateIndex(clamped);
+    const rate = RATES[clamped];
+    rateRef.current = rate;
+    if (narrationRef.current) {
+      narrationRef.current.playbackRate = rate;
+    }
+  }, []);
 
   const goTo = useCallback(
     (i: number) => {
@@ -404,12 +524,16 @@ export default function StoryPlayer({ story }: Props) {
   }, [teardownNarration, cancelEndingTail]);
 
   const startAfterDedication = useCallback(() => {
+    unlockAudio();
     setShowDedication(false);
     play();
-  }, [play]);
+  }, [play, unlockAudio]);
 
+  // Desktop only: auto-advance past the dedication. On phones (esp. iOS
+  // Safari) autoplay without a tap is blocked — keep "Tap to begin".
   useEffect(() => {
     if (!showDedication) return;
+    if (isCoarsePointerDevice()) return;
     const timer = window.setTimeout(() => startAfterDedication(), 4500);
     return () => window.clearTimeout(timer);
   }, [showDedication, startAfterDedication]);
@@ -417,9 +541,13 @@ export default function StoryPlayer({ story }: Props) {
   // Background music
   useEffect(() => {
     if (!story.music_url) return;
-    const audio = new Audio(story.music_url);
+    const audio = new Audio();
+    audio.preload = "auto";
     audio.loop = true;
     audio.volume = MUSIC_VOLUME;
+    audio.setAttribute("playsinline", "true");
+    audio.setAttribute("webkit-playsinline", "true");
+    audio.src = story.music_url;
     musicRef.current = audio;
     return () => {
       audio.pause();
@@ -549,7 +677,7 @@ export default function StoryPlayer({ story }: Props) {
           className={`cinema${expanded ? " is-expanded" : ""}`}
           onClick={() => {
             if (showDedication || finished) return;
-            if (!isPlaying) {
+            if (!isPlayingRef.current) {
               play();
               return;
             }
@@ -603,10 +731,13 @@ export default function StoryPlayer({ story }: Props) {
             <button
               type="button"
               className="ghost-btn"
-              onClick={() => setRateIndex((r) => (r + 1) % RATES.length)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setPlaybackRateIndex(rateIndex + 1);
+              }}
               aria-label="Change playback speed"
             >
-              {RATES[rateIndex]}x
+              {RATES[rateIndex] === 1 ? "1x" : `${RATES[rateIndex]}x`}
             </button>
           </header>
 
@@ -614,12 +745,12 @@ export default function StoryPlayer({ story }: Props) {
             className={`chrome center-chrome ${
               !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
             }`}
-            onClick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
               className="play-fab"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 if (finished) replay();
                 else toggle();
               }}
