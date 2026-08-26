@@ -12,37 +12,41 @@ import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
 
 const MUSIC_VOLUME = 0.22;
-/** Playback speed options — index 1 is normal (1x). Never auto-advance this. */
+/** Same speed steps as the native PlayerSu / PlayerMu / PlayerBi. */
 const RATES = [0.85, 1, 1.15] as const;
-const DEFAULT_RATE_INDEX = 1;
+/** Match the phone app default (PlayerSu starts at 0.85x). */
+const DEFAULT_RATE_INDEX = 0;
 
 function isCoarsePointerDevice(): boolean {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(pointer: coarse), (hover: none)").matches;
 }
 
-/** Fresh Audio element tuned for iOS Safari (autoplay + inline playback). */
-function createNarrationAudio(url: string, rate: number): HTMLAudioElement {
-  const audio = new Audio();
-  audio.preload = "auto";
-  audio.crossOrigin = "anonymous";
-  // iOS treats media without playsinline more like fullscreen video and can
-  // block/interrupt programmatic pause/play.
-  audio.setAttribute("playsinline", "true");
-  audio.setAttribute("webkit-playsinline", "true");
-  audio.src = url;
-  // Apply rate after metadata so WebKit doesn't drop or clamp the value.
-  const applyRate = () => {
-    audio.playbackRate = rate;
-    try {
-      (audio as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
-    } catch {
-      /* older WebKit */
-    }
-  };
-  if (audio.readyState >= 1) applyRate();
-  else audio.addEventListener("loadedmetadata", applyRate, { once: true });
-  return audio;
+/** Read real file duration from a narration URL (for the scrub-bar clock). */
+function probeAudioDurationMs(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const audio = new Audio();
+    audio.preload = "metadata";
+    const finish = (ms: number | null) => {
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      audio.removeAttribute("src");
+      try {
+        audio.load();
+      } catch {
+        /* ignore */
+      }
+      resolve(ms);
+    };
+    audio.onloadedmetadata = () => {
+      const ms = Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : null;
+      finish(ms && ms > 0 ? ms : null);
+    };
+    audio.onerror = () => finish(null);
+    // Do NOT set crossOrigin — Supabase signed URLs often lack CORS headers,
+    // and anonymous CORS mode then blocks metadata/playback in Safari.
+    audio.src = url;
+  });
 }
 
 type FullscreenDocument = Document & {
@@ -82,7 +86,6 @@ async function exitDocumentFullscreen(): Promise<void> {
   }
 }
 
-/** Phones: CSS portrait overlay instead of native Fullscreen (which often rotates to landscape). */
 function prefersPortraitCssFullscreen(): boolean {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(max-width: 768px), (pointer: coarse) and (hover: none)").matches;
@@ -104,24 +107,25 @@ export default function StoryPlayer({ story }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isImmersive, setIsImmersive] = useState(false);
   const [showDedication, setShowDedication] = useState(true);
+  /** Real narration file lengths (ms), filled as metadata loads. Null = still estimating. */
+  const [audioDurationsMs, setAudioDurationsMs] = useState<(number | null)[]>(() =>
+    scenes.map(() => null),
+  );
 
   const shellRef = useRef<HTMLDivElement | null>(null);
-  const narrationRef = useRef<HTMLAudioElement | null>(null);
+  const narrationElRef = useRef<HTMLAudioElement | null>(null);
   const musicRef = useRef<HTMLAudioElement | null>(null);
-  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const progressTimerRef = useRef<number | null>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
   const indexRef = useRef(0);
   const isPlayingRef = useRef(false);
   const rateRef = useRef<number>(RATES[DEFAULT_RATE_INDEX]);
-  const speakGenRef = useRef(0);
-  /** Generation id belonging to the active narration HTMLAudioElement — pause must NOT bump this or ontimeupdate/onended die after resume (iOS play/pause break). */
-  const narrationGenRef = useRef(0);
-  const usingTtsRef = useRef(false);
+  /** Bumped when we intentionally replace/tear down narration (seek, new scene, unmount) — not on pause. */
+  const sceneTokenRef = useRef(0);
   const audioUnlockedRef = useRef(false);
   const endingFadeIntervalRef = useRef<number | null>(null);
   const endingTailActiveRef = useRef(false);
   const endingTailRemainingMsRef = useRef(ENDING_TAIL_MS);
+  const speakSceneRef = useRef<((i: number) => void) | null>(null);
 
   indexRef.current = index;
   isPlayingRef.current = isPlaying;
@@ -134,28 +138,45 @@ export default function StoryPlayer({ story }: Props) {
   const activeImage =
     current?.shots?.[shotIndex]?.url ?? current?.image_url ?? null;
 
+  // Prefer real audio file duration (÷ playback rate) so the clock matches the
+  // phone app's narration files. Fall back to the text estimate only when a
+  // scene has no audio_url or metadata hasn't loaded yet.
   const sceneDurationsMs = useMemo(
-    () => scenes.map((s) => estimateSpeechDurationMs(s.text, RATES[rateIndex])),
-    [scenes, rateIndex],
+    () =>
+      scenes.map((s, i) => {
+        const rate = RATES[rateIndex];
+        const real = audioDurationsMs[i];
+        if (real != null && real > 0) return Math.round(real / rate);
+        return estimateSpeechDurationMs(s.text, rate);
+      }),
+    [scenes, rateIndex, audioDurationsMs],
   );
-  const totalDurationMs = sceneDurationsMs.reduce((sum, d) => sum + d, 0);
+  const totalDurationMs =
+    sceneDurationsMs.reduce((sum, d) => sum + d, 0) + ENDING_TAIL_MS;
   const elapsedDurationMs =
     sceneDurationsMs.slice(0, index).reduce((sum, d) => sum + d, 0) +
     progress * (sceneDurationsMs[index] ?? 0);
 
-  const clearProgressTimer = useCallback(() => {
-    if (progressTimerRef.current != null) {
-      window.clearInterval(progressTimerRef.current);
-      progressTimerRef.current = null;
-    }
-  }, []);
-
-  const stopSpeech = useCallback(() => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    speechUtteranceRef.current = null;
-  }, []);
+  // Probe every scene's narration file once so the total clock matches generation.
+  useEffect(() => {
+    let cancelled = false;
+    const urls = scenes.map((s) => s.audio_url);
+    urls.forEach((url, i) => {
+      if (!url) return;
+      void probeAudioDurationMs(url).then((ms) => {
+        if (cancelled || ms == null) return;
+        setAudioDurationsMs((prev) => {
+          if (prev[i] === ms) return prev;
+          const next = [...prev];
+          next[i] = ms;
+          return next;
+        });
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [scenes]);
 
   const clearEndingFade = useCallback(() => {
     if (endingFadeIntervalRef.current != null) {
@@ -164,20 +185,20 @@ export default function StoryPlayer({ story }: Props) {
     }
   }, []);
 
-  const teardownNarration = useCallback(() => {
-    const audio = narrationRef.current;
-    if (audio) {
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
-      narrationRef.current = null;
+  const stopNarrationElement = useCallback(() => {
+    const el = narrationElRef.current;
+    if (!el) return;
+    el.onended = null;
+    el.ontimeupdate = null;
+    el.onerror = null;
+    el.pause();
+    el.removeAttribute("src");
+    try {
+      el.load();
+    } catch {
+      /* ignore */
     }
-    narrationGenRef.current = -1;
-    usingTtsRef.current = false;
-    stopSpeech();
-    clearProgressTimer();
-    clearEndingFade();
-  }, [clearProgressTimer, stopSpeech, clearEndingFade]);
+  }, []);
 
   const restoreMusicVolume = useCallback(() => {
     if (musicRef.current) {
@@ -193,16 +214,33 @@ export default function StoryPlayer({ story }: Props) {
     restoreMusicVolume();
   }, [clearEndingFade, restoreMusicVolume]);
 
-  /** Prime HTMLAudio + speechSynthesis inside a real user gesture (required on iOS Safari). */
+  /** Unlock media inside a user gesture — required on iOS Safari. */
   const unlockAudio = useCallback(() => {
     if (audioUnlockedRef.current) return;
     audioUnlockedRef.current = true;
+
+    const narration = narrationElRef.current;
+    if (narration) {
+      // Silent unlock of the dedicated narration element.
+      const prev = narration.volume;
+      narration.volume = 0;
+      void narration
+        .play()
+        .then(() => {
+          narration.pause();
+          narration.volume = prev || 1;
+        })
+        .catch(() => {
+          narration.volume = prev || 1;
+        });
+    }
 
     const music = musicRef.current;
     if (music) {
       const prevVol = music.volume;
       music.volume = 0;
-      music.play()
+      void music
+        .play()
         .then(() => {
           music.pause();
           music.currentTime = 0;
@@ -211,18 +249,6 @@ export default function StoryPlayer({ story }: Props) {
         .catch(() => {
           music.volume = prevVol || MUSIC_VOLUME;
         });
-    }
-
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      try {
-        const warm = new SpeechSynthesisUtterance(" ");
-        warm.volume = 0;
-        warm.rate = 1;
-        window.speechSynthesis.speak(warm);
-        window.speechSynthesis.cancel();
-      } catch {
-        /* ignore */
-      }
     }
   }, []);
 
@@ -239,37 +265,43 @@ export default function StoryPlayer({ story }: Props) {
     setProgress(1);
   }, [clearEndingFade]);
 
-  const beginEndingTail = useCallback((remainingMs: number = ENDING_TAIL_MS) => {
-    clearEndingFade();
-    const duration = Math.max(0, remainingMs);
-    if (duration <= 0) {
-      completeEndingTail();
-      return;
-    }
-    endingTailActiveRef.current = true;
-    endingTailRemainingMsRef.current = duration;
-    setIsPlaying(true);
-    setProgress(1);
-
-    const music = musicRef.current;
-    if (music) {
-      const alreadyElapsed = ENDING_TAIL_MS - duration;
-      music.volume = endingTailMusicVolume(MUSIC_VOLUME, alreadyElapsed / ENDING_TAIL_MS);
-      music.play().catch(() => {});
-    }
-
-    const started = Date.now();
-    endingFadeIntervalRef.current = window.setInterval(() => {
-      const elapsed = Date.now() - started;
-      const remaining = Math.max(0, duration - elapsed);
-      endingTailRemainingMsRef.current = remaining;
-      const progress = 1 - remaining / ENDING_TAIL_MS;
-      if (musicRef.current) {
-        musicRef.current.volume = endingTailMusicVolume(MUSIC_VOLUME, progress);
+  const beginEndingTail = useCallback(
+    (remainingMs: number = ENDING_TAIL_MS) => {
+      clearEndingFade();
+      const duration = Math.max(0, remainingMs);
+      if (duration <= 0) {
+        completeEndingTail();
+        return;
       }
-      if (remaining <= 0) completeEndingTail();
-    }, 50);
-  }, [clearEndingFade, completeEndingTail]);
+      endingTailActiveRef.current = true;
+      endingTailRemainingMsRef.current = duration;
+      setIsPlaying(true);
+      setProgress(1);
+
+      const music = musicRef.current;
+      if (music) {
+        const alreadyElapsed = ENDING_TAIL_MS - duration;
+        music.volume = endingTailMusicVolume(
+          MUSIC_VOLUME,
+          alreadyElapsed / ENDING_TAIL_MS,
+        );
+        void music.play().catch(() => {});
+      }
+
+      const started = Date.now();
+      endingFadeIntervalRef.current = window.setInterval(() => {
+        const elapsed = Date.now() - started;
+        const remaining = Math.max(0, duration - elapsed);
+        endingTailRemainingMsRef.current = remaining;
+        const fadeProgress = 1 - remaining / ENDING_TAIL_MS;
+        if (musicRef.current) {
+          musicRef.current.volume = endingTailMusicVolume(MUSIC_VOLUME, fadeProgress);
+        }
+        if (remaining <= 0) completeEndingTail();
+      }, 50);
+    },
+    [clearEndingFade, completeEndingTail],
+  );
 
   const scheduleHideControls = useCallback(() => {
     if (hideControlsTimerRef.current != null) {
@@ -291,161 +323,139 @@ export default function StoryPlayer({ story }: Props) {
       setIndex(next);
       setProgress(0);
       setImageFailed(false);
-      // speakScene is defined below; call via ref pattern after declaration
       speakSceneRef.current?.(next);
     } else {
       beginEndingTail(ENDING_TAIL_MS);
     }
   }, [scenes.length, beginEndingTail]);
 
-  const speakWithDeviceTts = useCallback(
-    (text: string, gen: number) => {
-      usingTtsRef.current = true;
-      if (typeof window === "undefined" || !window.speechSynthesis) {
-        const duration = estimateSpeechDurationMs(text, rateRef.current);
-        const started = Date.now();
-        progressTimerRef.current = window.setInterval(() => {
-          if (speakGenRef.current !== gen) return;
-          const ratio = Math.min(1, (Date.now() - started) / duration);
-          setProgress(ratio);
-          if (ratio >= 1) {
-            clearProgressTimer();
-            advanceOrFinish();
-          }
-        }, 100);
-        return;
-      }
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = rateRef.current;
-      utterance.lang = "en-US";
-      speechUtteranceRef.current = utterance;
-
-      const duration = estimateSpeechDurationMs(text, rateRef.current);
-      const started = Date.now();
-      progressTimerRef.current = window.setInterval(() => {
-        if (speakGenRef.current !== gen) return;
-        setProgress(Math.min(0.99, (Date.now() - started) / duration));
-      }, 100);
-
-      utterance.onend = () => {
-        if (speakGenRef.current !== gen) return;
-        clearProgressTimer();
-        setProgress(1);
-        advanceOrFinish();
-      };
-      utterance.onerror = () => {
-        if (speakGenRef.current !== gen) return;
-        clearProgressTimer();
-        setIsPlaying(false);
-      };
-
-      window.speechSynthesis.speak(utterance);
-    },
-    [advanceOrFinish, clearProgressTimer],
-  );
-
-  const speakSceneRef = useRef<((i: number) => void) | null>(null);
-
+  /**
+   * Play scene i using the pre-generated narration file (same audio as the
+   * phone app). No device-TTS fallback — that sounded faster and desynced time.
+   */
   const speakScene = useCallback(
     (i: number) => {
       const scene = scenes[i];
-      if (!scene) return;
+      const el = narrationElRef.current;
+      if (!scene || !el) return;
 
-      const gen = ++speakGenRef.current;
-      teardownNarration();
+      const token = ++sceneTokenRef.current;
       cancelEndingTail();
-      usingTtsRef.current = false;
+      clearEndingFade();
       setProgress(0);
       setIsPlaying(true);
       setFinished(false);
       showControls();
 
-      if (musicRef.current && musicRef.current.paused) {
-        musicRef.current.play().catch(() => {});
+      if (musicRef.current?.paused) {
+        void musicRef.current.play().catch(() => {});
       }
 
-      const spoken = sanitizeForSpeech(scene.text);
+      el.onended = null;
+      el.ontimeupdate = null;
+      el.onerror = null;
+      el.pause();
 
-      if (scene.audio_url) {
-        const audio = createNarrationAudio(scene.audio_url, rateRef.current);
-        narrationRef.current = audio;
-        narrationGenRef.current = gen;
+      const url = scene.audio_url;
+      if (!url) {
+        // No narration file — hold the scene; user can skip via progress segments.
+        console.warn(`[StoryPlayer] scene ${i} has no audio_url`);
+        setIsPlaying(false);
+        setProgress(1);
+        return;
+      }
 
-        audio.ontimeupdate = () => {
-          // Use narrationGenRef so pause/resume does not kill progress updates.
-          if (narrationGenRef.current !== gen) return;
-          if (audio.duration > 0) {
-            setProgress(Math.min(1, audio.currentTime / audio.duration));
-          }
-        };
-        audio.onended = () => {
-          if (narrationGenRef.current !== gen) return;
-          setProgress(1);
-          advanceOrFinish();
-        };
-        audio.onerror = () => {
-          if (narrationGenRef.current !== gen) return;
-          console.warn("[StoryPlayer] narration audio failed — falling back to TTS");
-          speakWithDeviceTts(spoken, gen);
-        };
-        void audio.play().then(
+      el.src = url;
+      el.playbackRate = rateRef.current;
+      try {
+        (el as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
+      } catch {
+        /* older WebKit */
+      }
+
+      el.ontimeupdate = () => {
+        if (sceneTokenRef.current !== token) return;
+        if (el.duration > 0) {
+          setProgress(Math.min(1, el.currentTime / el.duration));
+        }
+      };
+      el.onended = () => {
+        if (sceneTokenRef.current !== token) return;
+        setProgress(1);
+        advanceOrFinish();
+      };
+      el.onerror = () => {
+        if (sceneTokenRef.current !== token) return;
+        console.error(`[StoryPlayer] narration failed to load for scene ${i}`);
+        setIsPlaying(false);
+        showControls();
+      };
+
+      const start = () => {
+        if (sceneTokenRef.current !== token) return;
+        el.playbackRate = rateRef.current;
+        void el.play().then(
           () => {
-            // Ensure rate stuck at the chosen value after play starts (WebKit quirk).
-            audio.playbackRate = rateRef.current;
+            if (sceneTokenRef.current !== token) return;
+            // Re-assert rate after play — WebKit sometimes resets it.
+            el.playbackRate = rateRef.current;
           },
           (err: unknown) => {
-            if (narrationGenRef.current !== gen) return;
+            if (sceneTokenRef.current !== token) return;
             const name =
               err && typeof err === "object" && "name" in err
                 ? String((err as { name: string }).name)
                 : "";
-            // Autoplay blocked — leave the play button ready; do NOT swap to
-            // TTS (speechSynthesis is also gesture-gated and sounds too fast
-            // on many iPhones).
-            if (name === "NotAllowedError") {
-              setIsPlaying(false);
-              showControls();
-              return;
-            }
-            console.warn("[StoryPlayer] narration play failed — falling back to TTS", err);
-            speakWithDeviceTts(spoken, gen);
+            console.warn("[StoryPlayer] play() blocked or failed", name || err);
+            setIsPlaying(false);
+            showControls();
           },
         );
-        return;
-      }
+      };
 
-      speakWithDeviceTts(spoken, gen);
+      if (el.readyState >= 2) start();
+      else {
+        const onReady = () => {
+          el.removeEventListener("loadeddata", onReady);
+          start();
+        };
+        el.addEventListener("loadeddata", onReady);
+        el.load();
+      }
     },
-    [scenes, teardownNarration, showControls, advanceOrFinish, speakWithDeviceTts, cancelEndingTail],
+    [scenes, cancelEndingTail, clearEndingFade, showControls, advanceOrFinish],
   );
   speakSceneRef.current = speakScene;
 
   const play = useCallback(() => {
     if (scenes.length === 0) return;
     unlockAudio();
+
     if (endingTailActiveRef.current) {
       beginEndingTail(endingTailRemainingMsRef.current);
       showControls();
       return;
     }
+
+    const el = narrationElRef.current;
+    // True resume: same scene audio, paused mid-file.
     if (
-      narrationRef.current &&
-      narrationRef.current.paused &&
-      !narrationRef.current.ended &&
-      !usingTtsRef.current
+      el &&
+      el.src &&
+      el.paused &&
+      !el.ended &&
+      el.currentTime > 0 &&
+      Number.isFinite(el.duration)
     ) {
+      el.playbackRate = rateRef.current;
       setIsPlaying(true);
       setFinished(false);
-      narrationRef.current.playbackRate = rateRef.current;
-      void narrationRef.current.play().catch(() => {
-        // Still blocked — keep UI on play so the user can try again.
-        setIsPlaying(false);
-      });
-      musicRef.current?.play().catch(() => {});
+      void el.play().catch(() => setIsPlaying(false));
+      void musicRef.current?.play().catch(() => {});
       showControls();
       return;
     }
+
     speakScene(indexRef.current);
   }, [scenes.length, speakScene, showControls, beginEndingTail, unlockAudio]);
 
@@ -457,29 +467,14 @@ export default function StoryPlayer({ story }: Props) {
       showControls();
       return;
     }
-    // HTML narration: pause in place. Do NOT bump speakGenRef / narrationGenRef
-    // or ontimeupdate/onended become dead after resume (classic iOS "play does
-    // nothing" / stuck-at-end bug).
-    if (narrationRef.current && !usingTtsRef.current) {
-      narrationRef.current.pause();
-      musicRef.current?.pause();
-      setIsPlaying(false);
-      showControls();
-      return;
-    }
-    // TTS path cannot true-pause on iOS — cancel and restart on next play.
-    speakGenRef.current++;
-    stopSpeech();
-    clearProgressTimer();
-    clearEndingFade();
+    // Pause in place — do not bump sceneTokenRef or tear down src.
+    narrationElRef.current?.pause();
     musicRef.current?.pause();
     setIsPlaying(false);
     showControls();
-  }, [stopSpeech, clearProgressTimer, clearEndingFade, showControls]);
+  }, [clearEndingFade, showControls]);
 
   const toggle = useCallback(() => {
-    // Read the ref so rapid double-taps on iOS don't both see the same stale
-    // React state and no-op / double-flip.
     if (isPlayingRef.current) pause();
     else play();
   }, [pause, play]);
@@ -489,8 +484,8 @@ export default function StoryPlayer({ story }: Props) {
     setRateIndex(clamped);
     const rate = RATES[clamped];
     rateRef.current = rate;
-    if (narrationRef.current) {
-      narrationRef.current.playbackRate = rate;
+    if (narrationElRef.current) {
+      narrationElRef.current.playbackRate = rate;
     }
   }, []);
 
@@ -501,15 +496,17 @@ export default function StoryPlayer({ story }: Props) {
       setProgress(0);
       setImageFailed(false);
       setFinished(false);
-      if (isPlayingRef.current) speakScene(clamped);
-      else {
-        teardownNarration();
-        cancelEndingTail();
+      cancelEndingTail();
+      if (isPlayingRef.current) {
+        speakScene(clamped);
+      } else {
+        sceneTokenRef.current++;
+        stopNarrationElement();
         setIsPlaying(false);
       }
       showControls();
     },
-    [scenes.length, speakScene, teardownNarration, cancelEndingTail, showControls],
+    [scenes.length, speakScene, cancelEndingTail, stopNarrationElement, showControls],
   );
 
   const replay = useCallback(() => {
@@ -517,20 +514,21 @@ export default function StoryPlayer({ story }: Props) {
     setIndex(0);
     setProgress(0);
     setImageFailed(false);
-    teardownNarration();
+    sceneTokenRef.current++;
+    stopNarrationElement();
     cancelEndingTail();
     setIsPlaying(false);
     setShowDedication(true);
-  }, [teardownNarration, cancelEndingTail]);
+  }, [stopNarrationElement, cancelEndingTail]);
 
   const startAfterDedication = useCallback(() => {
     unlockAudio();
     setShowDedication(false);
-    play();
+    // Defer one frame so the dedication unmounts, then start inside the
+    // same user-gesture turn (still sync enough for iOS after unlock).
+    window.setTimeout(() => play(), 0);
   }, [play, unlockAudio]);
 
-  // Desktop only: auto-advance past the dedication. On phones (esp. iOS
-  // Safari) autoplay without a tap is blocked — keep "Tap to begin".
   useEffect(() => {
     if (!showDedication) return;
     if (isCoarsePointerDevice()) return;
@@ -538,7 +536,6 @@ export default function StoryPlayer({ story }: Props) {
     return () => window.clearTimeout(timer);
   }, [showDedication, startAfterDedication]);
 
-  // Background music
   useEffect(() => {
     if (!story.music_url) return;
     const audio = new Audio();
@@ -555,18 +552,18 @@ export default function StoryPlayer({ story }: Props) {
     };
   }, [story.music_url]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      teardownNarration();
+      sceneTokenRef.current++;
+      stopNarrationElement();
+      clearEndingFade();
       musicRef.current?.pause();
       if (hideControlsTimerRef.current != null) {
         window.clearTimeout(hideControlsTimerRef.current);
       }
     };
-  }, [teardownNarration]);
+  }, [stopNarrationElement, clearEndingFade]);
 
-  // Prefetch nearby images
   useEffect(() => {
     const urls = [
       ...(scenes[index]?.shots?.map((s) => s.url) ?? []),
@@ -584,10 +581,6 @@ export default function StoryPlayer({ story }: Props) {
     setImageFailed(false);
   }, [activeImage]);
 
-  // Keep the share/referral slug in the address bar for the whole playback
-  // session so the End Card CTA and any copied URL still carry it. The
-  // slug is the story's unique share short_code — same value track-referral
-  // looks up — and is also present on the inbound share URL as `?ref=`.
   useEffect(() => {
     if (!story.referral_slug || typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -596,7 +589,6 @@ export default function StoryPlayer({ story }: Props) {
     window.history.replaceState({}, "", url);
   }, [story.referral_slug]);
 
-  // Native Fullscreen API only — never request on load, story start, or URL open.
   useEffect(() => {
     const syncFullscreenState = () => {
       setIsFullscreen(getFullscreenElement() === shellRef.current);
@@ -642,8 +634,6 @@ export default function StoryPlayer({ story }: Props) {
         setIsImmersive(false);
         return;
       }
-      // Mobile: stay in portrait and fill the phone. Native Fullscreen API
-      // often forces landscape and is unreliable on iOS for non-video nodes.
       if (prefersPortraitCssFullscreen()) {
         setIsImmersive(true);
         return;
@@ -673,6 +663,14 @@ export default function StoryPlayer({ story }: Props) {
         className={`player-shell${isImmersive ? " immersive" : ""}`}
         ref={shellRef}
       >
+        {/* Persistent narration element — more reliable pause/resume on iOS than new Audio(). */}
+        <audio
+          ref={narrationElRef}
+          playsInline
+          preload="auto"
+          className="narration-audio"
+        />
+
         <div
           className={`cinema${expanded ? " is-expanded" : ""}`}
           onClick={() => {
