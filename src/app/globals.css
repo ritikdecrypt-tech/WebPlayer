@@ -162,25 +162,34 @@ body {
 }
 
 .center-chrome {
-  inset: 0;
-  display: grid;
-  place-items: center;
-  /* Let taps reach top/bottom chrome; only the FAB captures pointer events. */
-  pointer-events: none;
+  /* Sized to the FAB only — full-bleed + pointer-events:none parents break
+     tap targets on iOS Safari (child pointer-events:auto is ignored). */
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  display: block;
+  pointer-events: auto;
 }
 
 .center-chrome.visible {
+  pointer-events: auto;
+}
+
+.center-chrome.hidden {
   pointer-events: none;
 }
 
 .play-fab {
-  width: 76px;
-  height: 76px;
+  width: 88px;
+  height: 88px;
   border-radius: 50%;
   border: none;
   background: var(--cream);
   color: var(--ink);
-  font-size: 1.3rem;
+  font-size: 1.35rem;
   cursor: pointer;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   touch-action: manipulation;
@@ -188,6 +197,8 @@ body {
   appearance: none;
   -webkit-appearance: none;
   pointer-events: auto;
+  position: relative;
+  z-index: 7;
 }
 
 .bottom-chrome {

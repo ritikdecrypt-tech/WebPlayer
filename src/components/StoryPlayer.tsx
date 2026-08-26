@@ -14,7 +14,7 @@ import DedicationCard from "@/components/DedicationCard";
 const MUSIC_VOLUME = 0.22;
 /** Same speed steps as the native PlayerSu / PlayerMu / PlayerBi. */
 const RATES = [0.85, 1, 1.15] as const;
-/** Match the phone app default (PlayerSu starts at 0.85x). */
+/** Match the phone app default (PlayerSu starts at index 0 → 0.85x). */
 const DEFAULT_RATE_INDEX = 0;
 
 function isCoarsePointerDevice(): boolean {
@@ -22,31 +22,19 @@ function isCoarsePointerDevice(): boolean {
   return window.matchMedia("(pointer: coarse), (hover: none)").matches;
 }
 
-/** Read real file duration from a narration URL (for the scrub-bar clock). */
-function probeAudioDurationMs(url: string): Promise<number | null> {
-  return new Promise((resolve) => {
-    const audio = new Audio();
-    audio.preload = "metadata";
-    const finish = (ms: number | null) => {
-      audio.onloadedmetadata = null;
-      audio.onerror = null;
-      audio.removeAttribute("src");
-      try {
-        audio.load();
-      } catch {
-        /* ignore */
-      }
-      resolve(ms);
-    };
-    audio.onloadedmetadata = () => {
-      const ms = Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : null;
-      finish(ms && ms > 0 ? ms : null);
-    };
-    audio.onerror = () => finish(null);
-    // Do NOT set crossOrigin — Supabase signed URLs often lack CORS headers,
-    // and anonymous CORS mode then blocks metadata/playback in Safari.
-    audio.src = url;
-  });
+/** Apply rate the way WebKit actually honors it (defaultPlaybackRate + playbackRate). */
+function applyNarrationRate(el: HTMLAudioElement, rate: number) {
+  try {
+    el.defaultPlaybackRate = rate;
+  } catch {
+    /* ignore */
+  }
+  el.playbackRate = rate;
+  try {
+    (el as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
+  } catch {
+    /* older WebKit */
+  }
 }
 
 type FullscreenDocument = Document & {
@@ -107,10 +95,6 @@ export default function StoryPlayer({ story }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isImmersive, setIsImmersive] = useState(false);
   const [showDedication, setShowDedication] = useState(true);
-  /** Real narration file lengths (ms), filled as metadata loads. Null = still estimating. */
-  const [audioDurationsMs, setAudioDurationsMs] = useState<(number | null)[]>(() =>
-    scenes.map(() => null),
-  );
 
   const shellRef = useRef<HTMLDivElement | null>(null);
   const narrationElRef = useRef<HTMLAudioElement | null>(null);
@@ -126,6 +110,8 @@ export default function StoryPlayer({ story }: Props) {
   const endingTailActiveRef = useRef(false);
   const endingTailRemainingMsRef = useRef(ENDING_TAIL_MS);
   const speakSceneRef = useRef<((i: number) => void) | null>(null);
+  /** Debounce touch+click double-firing on iOS. */
+  const lastToggleAtRef = useRef(0);
 
   indexRef.current = index;
   isPlayingRef.current = isPlaying;
@@ -138,46 +124,16 @@ export default function StoryPlayer({ story }: Props) {
   const activeImage =
     current?.shots?.[shotIndex]?.url ?? current?.image_url ?? null;
 
-  // Prefer real audio file duration (÷ playback rate) so the clock matches the
-  // phone app's narration files. Fall back to the text estimate only when a
-  // scene has no audio_url or metadata hasn't loaded yet.
+  // EXACT same clock math as PlayerSu — text estimate at the selected rate.
+  // Do not use raw file duration here or the total diverges from the phone UI.
   const sceneDurationsMs = useMemo(
-    () =>
-      scenes.map((s, i) => {
-        const rate = RATES[rateIndex];
-        const real = audioDurationsMs[i];
-        if (real != null && real > 0) return Math.round(real / rate);
-        return estimateSpeechDurationMs(s.text, rate);
-      }),
-    [scenes, rateIndex, audioDurationsMs],
+    () => scenes.map((s) => estimateSpeechDurationMs(s.text, RATES[rateIndex])),
+    [scenes, rateIndex],
   );
-  const totalDurationMs =
-    sceneDurationsMs.reduce((sum, d) => sum + d, 0) + ENDING_TAIL_MS;
+  const totalDurationMs = sceneDurationsMs.reduce((sum, d) => sum + d, 0);
   const elapsedDurationMs =
     sceneDurationsMs.slice(0, index).reduce((sum, d) => sum + d, 0) +
     progress * (sceneDurationsMs[index] ?? 0);
-
-  // Probe every scene's narration file once so the total clock matches generation.
-  useEffect(() => {
-    let cancelled = false;
-    const urls = scenes.map((s) => s.audio_url);
-    urls.forEach((url, i) => {
-      if (!url) return;
-      void probeAudioDurationMs(url).then((ms) => {
-        if (cancelled || ms == null) return;
-        setAudioDurationsMs((prev) => {
-          if (prev[i] === ms) return prev;
-          const next = [...prev];
-          next[i] = ms;
-          return next;
-        });
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [scenes]);
-
   const clearEndingFade = useCallback(() => {
     if (endingFadeIntervalRef.current != null) {
       window.clearInterval(endingFadeIntervalRef.current);
@@ -190,6 +146,7 @@ export default function StoryPlayer({ story }: Props) {
     if (!el) return;
     el.onended = null;
     el.ontimeupdate = null;
+    el.onplaying = null;
     el.onerror = null;
     el.pause();
     el.removeAttribute("src");
@@ -344,6 +301,7 @@ export default function StoryPlayer({ story }: Props) {
       clearEndingFade();
       setProgress(0);
       setIsPlaying(true);
+      isPlayingRef.current = true;
       setFinished(false);
       showControls();
 
@@ -353,31 +311,35 @@ export default function StoryPlayer({ story }: Props) {
 
       el.onended = null;
       el.ontimeupdate = null;
+      el.onplaying = null;
       el.onerror = null;
       el.pause();
 
       const url = scene.audio_url;
       if (!url) {
-        // No narration file — hold the scene; user can skip via progress segments.
         console.warn(`[StoryPlayer] scene ${i} has no audio_url`);
         setIsPlaying(false);
+        isPlayingRef.current = false;
         setProgress(1);
         return;
       }
 
       el.src = url;
-      el.playbackRate = rateRef.current;
-      try {
-        (el as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
-      } catch {
-        /* older WebKit */
-      }
+      applyNarrationRate(el, rateRef.current);
 
       el.ontimeupdate = () => {
         if (sceneTokenRef.current !== token) return;
+        // iOS Safari often silently resets playbackRate back to 1.
+        if (Math.abs(el.playbackRate - rateRef.current) > 0.01) {
+          applyNarrationRate(el, rateRef.current);
+        }
         if (el.duration > 0) {
           setProgress(Math.min(1, el.currentTime / el.duration));
         }
+      };
+      el.onplaying = () => {
+        if (sceneTokenRef.current !== token) return;
+        applyNarrationRate(el, rateRef.current);
       };
       el.onended = () => {
         if (sceneTokenRef.current !== token) return;
@@ -388,17 +350,17 @@ export default function StoryPlayer({ story }: Props) {
         if (sceneTokenRef.current !== token) return;
         console.error(`[StoryPlayer] narration failed to load for scene ${i}`);
         setIsPlaying(false);
+        isPlayingRef.current = false;
         showControls();
       };
 
       const start = () => {
         if (sceneTokenRef.current !== token) return;
-        el.playbackRate = rateRef.current;
+        applyNarrationRate(el, rateRef.current);
         void el.play().then(
           () => {
             if (sceneTokenRef.current !== token) return;
-            // Re-assert rate after play — WebKit sometimes resets it.
-            el.playbackRate = rateRef.current;
+            applyNarrationRate(el, rateRef.current);
           },
           (err: unknown) => {
             if (sceneTokenRef.current !== token) return;
@@ -408,6 +370,7 @@ export default function StoryPlayer({ story }: Props) {
                 : "";
             console.warn("[StoryPlayer] play() blocked or failed", name || err);
             setIsPlaying(false);
+            isPlayingRef.current = false;
             showControls();
           },
         );
@@ -441,16 +404,23 @@ export default function StoryPlayer({ story }: Props) {
     // True resume: same scene audio, paused mid-file.
     if (
       el &&
-      el.src &&
+      el.getAttribute("src") &&
       el.paused &&
       !el.ended &&
       el.currentTime > 0 &&
       Number.isFinite(el.duration)
     ) {
-      el.playbackRate = rateRef.current;
+      applyNarrationRate(el, rateRef.current);
       setIsPlaying(true);
+      isPlayingRef.current = true;
       setFinished(false);
-      void el.play().catch(() => setIsPlaying(false));
+      void el.play().then(
+        () => applyNarrationRate(el, rateRef.current),
+        () => {
+          setIsPlaying(false);
+          isPlayingRef.current = false;
+        },
+      );
       void musicRef.current?.play().catch(() => {});
       showControls();
       return;
@@ -464,6 +434,7 @@ export default function StoryPlayer({ story }: Props) {
       clearEndingFade();
       musicRef.current?.pause();
       setIsPlaying(false);
+      isPlayingRef.current = false;
       showControls();
       return;
     }
@@ -471,6 +442,7 @@ export default function StoryPlayer({ story }: Props) {
     narrationElRef.current?.pause();
     musicRef.current?.pause();
     setIsPlaying(false);
+    isPlayingRef.current = false;
     showControls();
   }, [clearEndingFade, showControls]);
 
@@ -485,7 +457,7 @@ export default function StoryPlayer({ story }: Props) {
     const rate = RATES[clamped];
     rateRef.current = rate;
     if (narrationElRef.current) {
-      narrationElRef.current.playbackRate = rate;
+      applyNarrationRate(narrationElRef.current, rate);
     }
   }, []);
 
@@ -518,15 +490,29 @@ export default function StoryPlayer({ story }: Props) {
     stopNarrationElement();
     cancelEndingTail();
     setIsPlaying(false);
+    isPlayingRef.current = false;
     setShowDedication(true);
   }, [stopNarrationElement, cancelEndingTail]);
+
+  /** iOS fires both touchend and click — debounce so we don't play then immediately pause. */
+  const handlePlayFabPress = useCallback(
+    (e: React.SyntheticEvent) => {
+      e.stopPropagation();
+      const now = Date.now();
+      if (now - lastToggleAtRef.current < 350) return;
+      lastToggleAtRef.current = now;
+      if (finished) replay();
+      else toggle();
+    },
+    [finished, toggle, replay],
+  );
 
   const startAfterDedication = useCallback(() => {
     unlockAudio();
     setShowDedication(false);
-    // Defer one frame so the dedication unmounts, then start inside the
-    // same user-gesture turn (still sync enough for iOS after unlock).
-    window.setTimeout(() => play(), 0);
+    // MUST stay synchronous with the tap — setTimeout breaks iOS's user-gesture
+    // token and Safari then blocks audio.play().
+    play();
   }, [play, unlockAudio]);
 
   useEffect(() => {
@@ -747,11 +733,8 @@ export default function StoryPlayer({ story }: Props) {
             <button
               type="button"
               className="play-fab"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (finished) replay();
-                else toggle();
-              }}
+              onPointerUp={handlePlayFabPress}
+              onClick={handlePlayFabPress}
               aria-label={isPlaying ? "Pause" : "Play"}
             >
               {isPlaying ? "❚❚" : "▶"}
