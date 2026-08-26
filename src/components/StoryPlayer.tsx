@@ -22,8 +22,13 @@ function isCoarsePointerDevice(): boolean {
   return window.matchMedia("(pointer: coarse), (hover: none)").matches;
 }
 
-/** Apply rate the way WebKit actually honors it (defaultPlaybackRate + playbackRate). */
-function applyNarrationRate(el: HTMLAudioElement, rate: number) {
+/**
+ * Apply narration speed. iOS Safari is unreliable about honoring playbackRate
+ * on <audio>; we play narration through a hidden <video playsInline> and
+ * re-assert rate on every playing/timeupdate tick (same 0.85 default as
+ * the native PlayerSu setPlaybackRate).
+ */
+function applyNarrationRate(el: HTMLMediaElement, rate: number) {
   try {
     el.defaultPlaybackRate = rate;
   } catch {
@@ -31,9 +36,27 @@ function applyNarrationRate(el: HTMLAudioElement, rate: number) {
   }
   el.playbackRate = rate;
   try {
-    (el as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
+    (el as HTMLMediaElement & { preservesPitch?: boolean }).preservesPitch = true;
   } catch {
     /* older WebKit */
+  }
+}
+
+/** Start or resume media at the given rate — pause→setRate→play is required on some iOS versions. */
+async function playMediaAtRate(el: HTMLMediaElement, rate: number): Promise<void> {
+  applyNarrationRate(el, rate);
+  try {
+    await el.play();
+  } catch (err) {
+    throw err;
+  }
+  applyNarrationRate(el, rate);
+  // If WebKit silently ignored the rate, force via pause/set/play once.
+  if (Math.abs(el.playbackRate - rate) > 0.01) {
+    el.pause();
+    applyNarrationRate(el, rate);
+    await el.play();
+    applyNarrationRate(el, rate);
   }
 }
 
@@ -97,7 +120,7 @@ export default function StoryPlayer({ story }: Props) {
   const [showDedication, setShowDedication] = useState(true);
 
   const shellRef = useRef<HTMLDivElement | null>(null);
-  const narrationElRef = useRef<HTMLAudioElement | null>(null);
+  const narrationElRef = useRef<HTMLVideoElement | null>(null);
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
   const indexRef = useRef(0);
@@ -306,6 +329,7 @@ export default function StoryPlayer({ story }: Props) {
       showControls();
 
       if (musicRef.current?.paused) {
+        musicRef.current.playbackRate = 1;
         void musicRef.current.play().catch(() => {});
       }
 
@@ -356,8 +380,7 @@ export default function StoryPlayer({ story }: Props) {
 
       const start = () => {
         if (sceneTokenRef.current !== token) return;
-        applyNarrationRate(el, rateRef.current);
-        void el.play().then(
+        void playMediaAtRate(el, rateRef.current).then(
           () => {
             if (sceneTokenRef.current !== token) return;
             applyNarrationRate(el, rateRef.current);
@@ -414,14 +437,18 @@ export default function StoryPlayer({ story }: Props) {
       setIsPlaying(true);
       isPlayingRef.current = true;
       setFinished(false);
-      void el.play().then(
+      void playMediaAtRate(el, rateRef.current).then(
         () => applyNarrationRate(el, rateRef.current),
         () => {
           setIsPlaying(false);
           isPlayingRef.current = false;
         },
       );
-      void musicRef.current?.play().catch(() => {});
+      // Music stays at 1x — same as the native player (only narration is rate-scaled).
+      if (musicRef.current) {
+        musicRef.current.playbackRate = 1;
+        void musicRef.current.play().catch(() => {});
+      }
       showControls();
       return;
     }
@@ -528,6 +555,8 @@ export default function StoryPlayer({ story }: Props) {
     audio.preload = "auto";
     audio.loop = true;
     audio.volume = MUSIC_VOLUME;
+    audio.playbackRate = 1;
+    audio.defaultPlaybackRate = 1;
     audio.setAttribute("playsinline", "true");
     audio.setAttribute("webkit-playsinline", "true");
     audio.src = story.music_url;
@@ -649,12 +678,17 @@ export default function StoryPlayer({ story }: Props) {
         className={`player-shell${isImmersive ? " immersive" : ""}`}
         ref={shellRef}
       >
-        {/* Persistent narration element — more reliable pause/resume on iOS than new Audio(). */}
-        <audio
-          ref={narrationElRef}
+        {/* Hidden video (not audio): iOS Safari honors playbackRate on video
+            far more reliably, which is how we match the phone's 0.85x default. */}
+        <video
+          ref={(el) => {
+            narrationElRef.current = el;
+            if (el) el.setAttribute("webkit-playsinline", "true");
+          }}
           playsInline
           preload="auto"
           className="narration-audio"
+          aria-hidden
         />
 
         <div

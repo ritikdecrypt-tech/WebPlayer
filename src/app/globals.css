@@ -92,10 +92,12 @@ body {
 
 .narration-audio {
   position: absolute;
-  width: 0;
-  height: 0;
+  width: 1px;
+  height: 1px;
   opacity: 0;
   pointer-events: none;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
 }
 
 .cinema-veil {
