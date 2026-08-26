@@ -7,6 +7,7 @@ import {
   formatClockTime,
   sanitizeForSpeech,
 } from "@/lib/playback";
+import { ENDING_TAIL_MS, endingTailMusicVolume } from "@/lib/endingCue";
 import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
 
@@ -83,6 +84,9 @@ export default function StoryPlayer({ story }: Props) {
   const isPlayingRef = useRef(false);
   const rateRef = useRef<number>(RATES[1]);
   const speakGenRef = useRef(0);
+  const endingFadeIntervalRef = useRef<number | null>(null);
+  const endingTailActiveRef = useRef(false);
+  const endingTailRemainingMsRef = useRef(ENDING_TAIL_MS);
 
   indexRef.current = index;
   isPlayingRef.current = isPlaying;
@@ -118,6 +122,13 @@ export default function StoryPlayer({ story }: Props) {
     speechUtteranceRef.current = null;
   }, []);
 
+  const clearEndingFade = useCallback(() => {
+    if (endingFadeIntervalRef.current != null) {
+      window.clearInterval(endingFadeIntervalRef.current);
+      endingFadeIntervalRef.current = null;
+    }
+  }, []);
+
   const teardownNarration = useCallback(() => {
     const audio = narrationRef.current;
     if (audio) {
@@ -128,7 +139,67 @@ export default function StoryPlayer({ story }: Props) {
     }
     stopSpeech();
     clearProgressTimer();
-  }, [clearProgressTimer, stopSpeech]);
+    clearEndingFade();
+  }, [clearProgressTimer, stopSpeech, clearEndingFade]);
+
+  const restoreMusicVolume = useCallback(() => {
+    if (musicRef.current) {
+      musicRef.current.volume = MUSIC_VOLUME;
+      musicRef.current.playbackRate = 1;
+    }
+  }, []);
+
+  const cancelEndingTail = useCallback(() => {
+    clearEndingFade();
+    endingTailActiveRef.current = false;
+    endingTailRemainingMsRef.current = ENDING_TAIL_MS;
+    restoreMusicVolume();
+  }, [clearEndingFade, restoreMusicVolume]);
+
+  const completeEndingTail = useCallback(() => {
+    clearEndingFade();
+    endingTailActiveRef.current = false;
+    endingTailRemainingMsRef.current = ENDING_TAIL_MS;
+    if (musicRef.current) {
+      musicRef.current.volume = 0;
+      musicRef.current.pause();
+    }
+    setIsPlaying(false);
+    setFinished(true);
+    setProgress(1);
+  }, [clearEndingFade]);
+
+  const beginEndingTail = useCallback((remainingMs: number = ENDING_TAIL_MS) => {
+    clearEndingFade();
+    const duration = Math.max(0, remainingMs);
+    if (duration <= 0) {
+      completeEndingTail();
+      return;
+    }
+    endingTailActiveRef.current = true;
+    endingTailRemainingMsRef.current = duration;
+    setIsPlaying(true);
+    setProgress(1);
+
+    const music = musicRef.current;
+    if (music) {
+      const alreadyElapsed = ENDING_TAIL_MS - duration;
+      music.volume = endingTailMusicVolume(MUSIC_VOLUME, alreadyElapsed / ENDING_TAIL_MS);
+      music.play().catch(() => {});
+    }
+
+    const started = Date.now();
+    endingFadeIntervalRef.current = window.setInterval(() => {
+      const elapsed = Date.now() - started;
+      const remaining = Math.max(0, duration - elapsed);
+      endingTailRemainingMsRef.current = remaining;
+      const progress = 1 - remaining / ENDING_TAIL_MS;
+      if (musicRef.current) {
+        musicRef.current.volume = endingTailMusicVolume(MUSIC_VOLUME, progress);
+      }
+      if (remaining <= 0) completeEndingTail();
+    }, 50);
+  }, [clearEndingFade, completeEndingTail]);
 
   const scheduleHideControls = useCallback(() => {
     if (hideControlsTimerRef.current != null) {
@@ -153,17 +224,13 @@ export default function StoryPlayer({ story }: Props) {
       // speakScene is defined below; call via ref pattern after declaration
       speakSceneRef.current?.(next);
     } else {
-      setIsPlaying(false);
-      setFinished(true);
-      setProgress(1);
-      if (musicRef.current) musicRef.current.pause();
+      beginEndingTail(ENDING_TAIL_MS);
     }
-  }, [scenes.length]);
+  }, [scenes.length, beginEndingTail]);
 
   const speakWithDeviceTts = useCallback(
     (text: string, gen: number) => {
       if (typeof window === "undefined" || !window.speechSynthesis) {
-        // No TTS available — advance after estimated duration
         const duration = estimateSpeechDurationMs(text, rateRef.current);
         const started = Date.now();
         progressTimerRef.current = window.setInterval(() => {
@@ -216,6 +283,7 @@ export default function StoryPlayer({ story }: Props) {
 
       const gen = ++speakGenRef.current;
       teardownNarration();
+      cancelEndingTail();
       setProgress(0);
       setIsPlaying(true);
       setFinished(false);
@@ -257,13 +325,17 @@ export default function StoryPlayer({ story }: Props) {
 
       speakWithDeviceTts(spoken, gen);
     },
-    [scenes, teardownNarration, showControls, advanceOrFinish, speakWithDeviceTts],
+    [scenes, teardownNarration, showControls, advanceOrFinish, speakWithDeviceTts, cancelEndingTail],
   );
-
   speakSceneRef.current = speakScene;
 
   const play = useCallback(() => {
     if (scenes.length === 0) return;
+    if (endingTailActiveRef.current) {
+      beginEndingTail(endingTailRemainingMsRef.current);
+      showControls();
+      return;
+    }
     if (
       narrationRef.current &&
       narrationRef.current.paused &&
@@ -277,17 +349,25 @@ export default function StoryPlayer({ story }: Props) {
       return;
     }
     speakScene(indexRef.current);
-  }, [scenes.length, speakScene, showControls]);
+  }, [scenes.length, speakScene, showControls, beginEndingTail]);
 
   const pause = useCallback(() => {
+    if (endingTailActiveRef.current) {
+      clearEndingFade();
+      musicRef.current?.pause();
+      setIsPlaying(false);
+      showControls();
+      return;
+    }
     speakGenRef.current++;
     narrationRef.current?.pause();
     stopSpeech();
     clearProgressTimer();
+    clearEndingFade();
     musicRef.current?.pause();
     setIsPlaying(false);
     showControls();
-  }, [stopSpeech, clearProgressTimer, showControls]);
+  }, [stopSpeech, clearProgressTimer, clearEndingFade, showControls]);
 
   const toggle = useCallback(() => {
     if (isPlaying) pause();
@@ -304,11 +384,12 @@ export default function StoryPlayer({ story }: Props) {
       if (isPlayingRef.current) speakScene(clamped);
       else {
         teardownNarration();
+        cancelEndingTail();
         setIsPlaying(false);
       }
       showControls();
     },
-    [scenes.length, speakScene, teardownNarration, showControls],
+    [scenes.length, speakScene, teardownNarration, cancelEndingTail, showControls],
   );
 
   const replay = useCallback(() => {
@@ -317,9 +398,10 @@ export default function StoryPlayer({ story }: Props) {
     setProgress(0);
     setImageFailed(false);
     teardownNarration();
+    cancelEndingTail();
     setIsPlaying(false);
     setShowDedication(true);
-  }, [teardownNarration]);
+  }, [teardownNarration, cancelEndingTail]);
 
   const startAfterDedication = useCallback(() => {
     setShowDedication(false);
