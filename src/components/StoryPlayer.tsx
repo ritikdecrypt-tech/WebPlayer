@@ -12,10 +12,10 @@ import {
   APP_NARRATION_RATE,
   applyMediaPlaybackRate,
   playMediaAtRate,
-  WebAudioNarration,
 } from "@/lib/narrationPlayback";
 import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
+import StoryProgressBar from "@/components/StoryProgressBar";
 
 const MUSIC_VOLUME = 0.22;
 
@@ -66,6 +66,17 @@ function prefersPortraitCssFullscreen(): boolean {
   return window.matchMedia("(max-width: 768px), (pointer: coarse) and (hover: none)").matches;
 }
 
+function prepareMediaElement(el: HTMLMediaElement) {
+  el.setAttribute("playsinline", "true");
+  el.setAttribute("webkit-playsinline", "true");
+  el.setAttribute("x-webkit-airplay", "deny");
+  try {
+    (el as HTMLMediaElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = true;
+  } catch {
+    /* ignore */
+  }
+}
+
 type Props = {
   story: SharedStory;
 };
@@ -94,10 +105,8 @@ export default function StoryPlayer({ story }: Props) {
   const endingFadeIntervalRef = useRef<number | null>(null);
   const endingTailActiveRef = useRef(false);
   const endingTailRemainingMsRef = useRef(ENDING_TAIL_MS);
-  const speakSceneRef = useRef<((i: number) => void) | null>(null);
-  const webAudioRef = useRef(new WebAudioNarration(APP_NARRATION_RATE));
-  const webAudioProgressTimerRef = useRef<number | null>(null);
-  const usingWebAudioRef = useRef(false);
+  const speakSceneRef = useRef<((i: number, withinRatio?: number) => void) | null>(null);
+  const pendingSeekRef = useRef<{ index: number; withinRatio: number } | null>(null);
   /** Debounce touch+click double-firing on iOS. */
   const lastToggleAtRef = useRef(0);
 
@@ -127,28 +136,7 @@ export default function StoryPlayer({ story }: Props) {
     }
   }, []);
 
-  const stopWebAudioProgress = useCallback(() => {
-    if (webAudioProgressTimerRef.current != null) {
-      window.clearInterval(webAudioProgressTimerRef.current);
-      webAudioProgressTimerRef.current = null;
-    }
-  }, []);
-
-  const startWebAudioProgress = useCallback(
-    (token: number) => {
-      stopWebAudioProgress();
-      webAudioProgressTimerRef.current = window.setInterval(() => {
-        if (sceneTokenRef.current !== token) return;
-        setProgress(webAudioRef.current.getProgress());
-      }, 50);
-    },
-    [stopWebAudioProgress],
-  );
-
   const stopNarrationElement = useCallback(() => {
-    stopWebAudioProgress();
-    usingWebAudioRef.current = false;
-    webAudioRef.current.stop();
     const el = narrationElRef.current;
     if (!el) return;
     el.onended = null;
@@ -162,7 +150,7 @@ export default function StoryPlayer({ story }: Props) {
     } catch {
       /* ignore */
     }
-  }, [stopWebAudioProgress]);
+  }, []);
 
   const restoreMusicVolume = useCallback(() => {
     if (musicRef.current) {
@@ -178,43 +166,18 @@ export default function StoryPlayer({ story }: Props) {
     restoreMusicVolume();
   }, [clearEndingFade, restoreMusicVolume]);
 
-  /** Unlock media inside a user gesture — required on iOS Safari. */
+  const pauseAllMedia = useCallback(() => {
+    narrationElRef.current?.pause();
+    musicRef.current?.pause();
+    clearEndingFade();
+    setIsPlaying(false);
+    isPlayingRef.current = false;
+  }, [clearEndingFade]);
+
+  /** Mark media as unlocked by the user gesture. Do not pause in a later
+   *  callback — that races the real play() and causes a silent first scene. */
   const unlockAudio = useCallback(() => {
-    if (audioUnlockedRef.current) return;
     audioUnlockedRef.current = true;
-    webAudioRef.current.unlock();
-
-    const narration = narrationElRef.current;
-    if (narration) {
-      // Silent unlock of the dedicated narration element.
-      const prev = narration.volume;
-      narration.volume = 0;
-      void narration
-        .play()
-        .then(() => {
-          narration.pause();
-          narration.volume = prev || 1;
-        })
-        .catch(() => {
-          narration.volume = prev || 1;
-        });
-    }
-
-    const music = musicRef.current;
-    if (music) {
-      const prevVol = music.volume;
-      music.volume = 0;
-      void music
-        .play()
-        .then(() => {
-          music.pause();
-          music.currentTime = 0;
-          music.volume = prevVol || MUSIC_VOLUME;
-        })
-        .catch(() => {
-          music.volume = prevVol || MUSIC_VOLUME;
-        });
-    }
   }, []);
 
   const completeEndingTail = useCallback(() => {
@@ -288,47 +251,38 @@ export default function StoryPlayer({ story }: Props) {
       setIndex(next);
       setProgress(0);
       setImageFailed(false);
-      speakSceneRef.current?.(next);
+      speakSceneRef.current?.(next, 0);
     } else {
       beginEndingTail(ENDING_TAIL_MS);
     }
   }, [scenes.length, beginEndingTail]);
 
   /**
-   * Play scene i using the pre-generated narration file at the same 0.85x
-   * the phone app uses. Web Audio is primary because iOS Safari often
-   * ignores HTMLMediaElement.playbackRate and plays at 1x (too fast).
+   * Stream the same signed narration MP3 the phone app plays, at the same
+   * 0.85x (pitch-preserved). Play immediately — do not wait to decode the
+   * whole file.
    */
   const speakScene = useCallback(
-    (i: number) => {
+    (i: number, withinRatio = 0) => {
       const scene = scenes[i];
       const el = narrationElRef.current;
-      if (!scene) return;
+      if (!scene || !el) return;
 
       const token = ++sceneTokenRef.current;
+      pendingSeekRef.current = null;
       cancelEndingTail();
       clearEndingFade();
-      stopWebAudioProgress();
-      webAudioRef.current.stop();
-      usingWebAudioRef.current = false;
-      setProgress(0);
+      setProgress(Math.max(0, Math.min(1, withinRatio)));
       setIsPlaying(true);
       isPlayingRef.current = true;
       setFinished(false);
       showControls();
 
-      if (musicRef.current?.paused) {
-        musicRef.current.playbackRate = 1;
-        void musicRef.current.play().catch(() => {});
-      }
-
-      if (el) {
-        el.onended = null;
-        el.ontimeupdate = null;
-        el.onplaying = null;
-        el.onerror = null;
-        el.pause();
-        el.removeAttribute("src");
+      const music = musicRef.current;
+      if (music) {
+        music.volume = MUSIC_VOLUME;
+        music.playbackRate = 1;
+        void music.play().catch(() => {});
       }
 
       const url = scene.audio_url;
@@ -340,103 +294,83 @@ export default function StoryPlayer({ story }: Props) {
         return;
       }
 
-      const onNarrationEnded = () => {
+      el.onended = null;
+      el.ontimeupdate = null;
+      el.onplaying = null;
+      el.onerror = null;
+
+      el.ontimeupdate = () => {
+        if (sceneTokenRef.current !== token) return;
+        if (Math.abs(el.playbackRate - APP_NARRATION_RATE) > 0.01) {
+          applyMediaPlaybackRate(el, APP_NARRATION_RATE);
+        }
+        if (el.duration > 0) {
+          setProgress(Math.min(1, el.currentTime / el.duration));
+        }
+      };
+      el.onplaying = () => {
+        if (sceneTokenRef.current !== token) return;
+        applyMediaPlaybackRate(el, APP_NARRATION_RATE);
+      };
+      el.onended = () => {
         if (sceneTokenRef.current !== token) return;
         setProgress(1);
         advanceOrFinish();
       };
-
-      const startElementFallback = () => {
-        if (!el) return;
-        usingWebAudioRef.current = false;
-        el.src = url;
-        applyMediaPlaybackRate(el, APP_NARRATION_RATE);
-
-        el.ontimeupdate = () => {
-          if (sceneTokenRef.current !== token) return;
-          if (Math.abs(el.playbackRate - APP_NARRATION_RATE) > 0.01) {
-            applyMediaPlaybackRate(el, APP_NARRATION_RATE);
-          }
-          if (el.duration > 0) {
-            setProgress(Math.min(1, el.currentTime / el.duration));
-          }
-        };
-        el.onplaying = () => {
-          if (sceneTokenRef.current !== token) return;
-          applyMediaPlaybackRate(el, APP_NARRATION_RATE);
-        };
-        el.onended = () => {
-          onNarrationEnded();
-        };
-        el.onerror = () => {
-          if (sceneTokenRef.current !== token) return;
-          console.error(`[StoryPlayer] narration failed to load for scene ${i}`);
-          setIsPlaying(false);
-          isPlayingRef.current = false;
-          showControls();
-        };
-
-        const start = () => {
-          if (sceneTokenRef.current !== token) return;
-          void playMediaAtRate(el, APP_NARRATION_RATE).then(
-            () => {
-              if (sceneTokenRef.current !== token) return;
-              applyMediaPlaybackRate(el, APP_NARRATION_RATE);
-            },
-            (err: unknown) => {
-              if (sceneTokenRef.current !== token) return;
-              const name =
-                err && typeof err === "object" && "name" in err
-                  ? String((err as { name: string }).name)
-                  : "";
-              console.warn("[StoryPlayer] play() blocked or failed", name || err);
-              setIsPlaying(false);
-              isPlayingRef.current = false;
-              showControls();
-            },
-          );
-        };
-
-        if (el.readyState >= 2) start();
-        else {
-          const onReady = () => {
-            el.removeEventListener("loadeddata", onReady);
-            start();
-          };
-          el.addEventListener("loadeddata", onReady);
-          el.load();
-        }
+      el.onerror = () => {
+        if (sceneTokenRef.current !== token) return;
+        console.error(`[StoryPlayer] narration failed to load for scene ${i}`);
+        setIsPlaying(false);
+        isPlayingRef.current = false;
+        showControls();
       };
 
-      webAudioRef.current.unlock();
-      void webAudioRef.current
-        .load(url)
-        .then((buffer) => {
-          if (sceneTokenRef.current !== token) return;
-          if (!isPlayingRef.current) {
-            webAudioRef.current.hold(buffer, onNarrationEnded);
-            usingWebAudioRef.current = true;
-            return;
+      const start = () => {
+        if (sceneTokenRef.current !== token) return;
+        if (withinRatio > 0 && Number.isFinite(el.duration) && el.duration > 0) {
+          try {
+            el.currentTime = withinRatio * el.duration;
+          } catch {
+            /* iOS can throw if not seekable yet */
           }
-          usingWebAudioRef.current = true;
-          webAudioRef.current.playBuffer(buffer, onNarrationEnded);
-          startWebAudioProgress(token);
-        })
-        .catch((err: unknown) => {
-          if (sceneTokenRef.current !== token) return;
-          console.warn("[StoryPlayer] Web Audio narration unavailable, using media element", err);
-          startElementFallback();
-        });
+        }
+        void playMediaAtRate(el, APP_NARRATION_RATE).then(
+          () => {
+            if (sceneTokenRef.current !== token) return;
+            applyMediaPlaybackRate(el, APP_NARRATION_RATE);
+          },
+          (err: unknown) => {
+            if (sceneTokenRef.current !== token) return;
+            const name =
+              err && typeof err === "object" && "name" in err
+                ? String((err as { name: string }).name)
+                : "";
+            console.warn("[StoryPlayer] play() blocked or failed", name || err);
+            setIsPlaying(false);
+            isPlayingRef.current = false;
+            showControls();
+          },
+        );
+      };
+
+      const alreadyThisFile = el.getAttribute("src") === url;
+      if (!alreadyThisFile) {
+        el.src = url;
+        applyMediaPlaybackRate(el, APP_NARRATION_RATE);
+      }
+
+      if (withinRatio > 0 && el.readyState < 1) {
+        const onMeta = () => {
+          el.removeEventListener("loadedmetadata", onMeta);
+          start();
+        };
+        el.addEventListener("loadedmetadata", onMeta);
+        el.load();
+      } else {
+        start();
+      }
     },
-    [
-      scenes,
-      cancelEndingTail,
-      clearEndingFade,
-      stopWebAudioProgress,
-      startWebAudioProgress,
-      showControls,
-      advanceOrFinish,
-    ],
+    [scenes, cancelEndingTail, clearEndingFade, showControls, advanceOrFinish],
   );
   speakSceneRef.current = speakScene;
 
@@ -450,35 +384,16 @@ export default function StoryPlayer({ story }: Props) {
       return;
     }
 
-    const resumeMusic = () => {
-      if (musicRef.current) {
-        musicRef.current.playbackRate = 1;
-        void musicRef.current.play().catch(() => {});
-      }
-    };
-
-    if (usingWebAudioRef.current && webAudioRef.current.canResume) {
-      setIsPlaying(true);
-      isPlayingRef.current = true;
-      setFinished(false);
-      const token = sceneTokenRef.current;
-      const resumed = webAudioRef.current.resume(() => {
-        if (sceneTokenRef.current !== token) return;
-        setProgress(1);
-        advanceOrFinish();
-      });
-      if (resumed) {
-        startWebAudioProgress(token);
-        resumeMusic();
-        showControls();
-        return;
-      }
+    const pending = pendingSeekRef.current;
+    if (pending) {
+      pendingSeekRef.current = null;
+      speakScene(pending.index, pending.withinRatio);
+      return;
     }
 
     const el = narrationElRef.current;
-    // True resume: same scene audio, paused mid-file (media-element fallback).
+    // True resume: same scene audio, paused mid-file.
     if (
-      !usingWebAudioRef.current &&
       el &&
       el.getAttribute("src") &&
       el.paused &&
@@ -497,21 +412,17 @@ export default function StoryPlayer({ story }: Props) {
           isPlayingRef.current = false;
         },
       );
-      resumeMusic();
+      if (musicRef.current) {
+        musicRef.current.volume = MUSIC_VOLUME;
+        musicRef.current.playbackRate = 1;
+        void musicRef.current.play().catch(() => {});
+      }
       showControls();
       return;
     }
 
-    speakScene(indexRef.current);
-  }, [
-    scenes.length,
-    speakScene,
-    showControls,
-    beginEndingTail,
-    unlockAudio,
-    startWebAudioProgress,
-    advanceOrFinish,
-  ]);
+    speakScene(indexRef.current, 0);
+  }, [scenes.length, speakScene, showControls, beginEndingTail, unlockAudio]);
 
   const pause = useCallback(() => {
     if (endingTailActiveRef.current) {
@@ -522,15 +433,12 @@ export default function StoryPlayer({ story }: Props) {
       showControls();
       return;
     }
-    // Pause in place — do not bump sceneTokenRef or tear down src.
-    stopWebAudioProgress();
-    webAudioRef.current.pause();
     narrationElRef.current?.pause();
     musicRef.current?.pause();
     setIsPlaying(false);
     isPlayingRef.current = false;
     showControls();
-  }, [clearEndingFade, showControls, stopWebAudioProgress]);
+  }, [clearEndingFade, showControls]);
 
   const toggle = useCallback(() => {
     if (isPlayingRef.current) pause();
@@ -538,23 +446,32 @@ export default function StoryPlayer({ story }: Props) {
   }, [pause, play]);
 
   const goTo = useCallback(
-    (i: number) => {
+    (i: number, withinRatio = 0) => {
       const clamped = Math.max(0, Math.min(i, scenes.length - 1));
+      const ratio = Math.max(0, Math.min(1, withinRatio));
       setIndex(clamped);
-      setProgress(0);
+      setProgress(ratio);
       setImageFailed(false);
       setFinished(false);
       cancelEndingTail();
       if (isPlayingRef.current) {
-        speakScene(clamped);
+        speakScene(clamped, ratio);
       } else {
-        sceneTokenRef.current++;
-        stopNarrationElement();
+        pendingSeekRef.current = { index: clamped, withinRatio: ratio };
+        const el = narrationElRef.current;
+        const url = scenes[clamped]?.audio_url;
+        if (el && url && el.getAttribute("src") === url && el.duration > 0) {
+          try {
+            el.currentTime = ratio * el.duration;
+          } catch {
+            /* ignore */
+          }
+        }
         setIsPlaying(false);
       }
       showControls();
     },
-    [scenes.length, speakScene, cancelEndingTail, stopNarrationElement, showControls],
+    [scenes, speakScene, cancelEndingTail, showControls],
   );
 
   const replay = useCallback(() => {
@@ -562,6 +479,7 @@ export default function StoryPlayer({ story }: Props) {
     setIndex(0);
     setProgress(0);
     setImageFailed(false);
+    pendingSeekRef.current = null;
     sceneTokenRef.current++;
     stopNarrationElement();
     cancelEndingTail();
@@ -599,21 +517,12 @@ export default function StoryPlayer({ story }: Props) {
   }, [showDedication, startAfterDedication]);
 
   useEffect(() => {
-    if (!story.music_url) return;
-    const audio = new Audio();
-    audio.preload = "auto";
-    audio.loop = true;
-    audio.volume = MUSIC_VOLUME;
-    audio.playbackRate = 1;
-    audio.defaultPlaybackRate = 1;
-    audio.setAttribute("playsinline", "true");
-    audio.setAttribute("webkit-playsinline", "true");
-    audio.src = story.music_url;
-    musicRef.current = audio;
-    return () => {
-      audio.pause();
-      musicRef.current = null;
-    };
+    const music = musicRef.current;
+    if (!music) return;
+    music.volume = MUSIC_VOLUME;
+    music.playbackRate = 1;
+    music.defaultPlaybackRate = 1;
+    prepareMediaElement(music);
   }, [story.music_url]);
 
   useEffect(() => {
@@ -629,6 +538,23 @@ export default function StoryPlayer({ story }: Props) {
   }, [stopNarrationElement, clearEndingFade]);
 
   useEffect(() => {
+    const halt = () => {
+      pauseAllMedia();
+    };
+    const onVisibility = () => {
+      if (document.hidden) halt();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", halt);
+    document.addEventListener("freeze", halt);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", halt);
+      document.removeEventListener("freeze", halt);
+    };
+  }, [pauseAllMedia]);
+
+  useEffect(() => {
     const urls = [
       ...(scenes[index]?.shots?.map((s) => s.url) ?? []),
       scenes[index]?.image_url,
@@ -639,6 +565,19 @@ export default function StoryPlayer({ story }: Props) {
       const img = new Image();
       img.src = url;
     });
+  }, [scenes, index]);
+
+  useEffect(() => {
+    const next = scenes[index + 1]?.audio_url;
+    if (!next) return;
+    const link = document.createElement("link");
+    link.rel = "preload";
+    link.as = "audio";
+    link.href = next;
+    document.head.appendChild(link);
+    return () => {
+      link.remove();
+    };
   }, [scenes, index]);
 
   useEffect(() => {
@@ -727,18 +666,38 @@ export default function StoryPlayer({ story }: Props) {
         className={`player-shell${isImmersive ? " immersive" : ""}`}
         ref={shellRef}
       >
-        {/* Persistent hidden video element — media-element fallback when
-            Web Audio cannot decode the narration file. */}
+        {/* Hidden video: streams the same MP3 as the app. Video+playsInline is
+            how iOS Safari honors playbackRate at 0.85 without changing pitch. */}
         <video
           ref={(el) => {
             narrationElRef.current = el;
-            if (el) el.setAttribute("webkit-playsinline", "true");
+            if (el) prepareMediaElement(el);
           }}
           playsInline
           preload="auto"
+          disablePictureInPicture
           className="narration-audio"
           aria-hidden
         />
+        {story.music_url ? (
+          <audio
+            ref={(el) => {
+              musicRef.current = el;
+              if (el) {
+                prepareMediaElement(el);
+                el.volume = MUSIC_VOLUME;
+                el.playbackRate = 1;
+                el.defaultPlaybackRate = 1;
+              }
+            }}
+            src={story.music_url}
+            loop
+            preload="auto"
+            playsInline
+            className="narration-audio"
+            aria-hidden
+          />
+        ) : null}
 
         <div
           className={`cinema${expanded ? " is-expanded" : ""}`}
@@ -822,22 +781,19 @@ export default function StoryPlayer({ story }: Props) {
             <p className="caption">{sanitizeForSpeech(current.text)}</p>
             <div className="progress-row">
               <span className="clock">{formatClockTime(elapsedDurationMs)}</span>
-              <div className="progress-track" aria-hidden>
-                {scenes.map((_, i) => {
-                  const fill = i < index ? 1 : i === index ? progress : 0;
-                  return (
-                    <button
-                      key={i}
-                      type="button"
-                      className="progress-seg"
-                      onClick={() => goTo(i)}
-                      aria-label={`Go to scene ${i + 1}`}
-                    >
-                      <span style={{ width: `${fill * 100}%` }} />
-                    </button>
-                  );
-                })}
-              </div>
+              <StoryProgressBar
+                sceneCount={scenes.length}
+                index={index}
+                progress={progress}
+                onSeek={(i, withinRatio) => goTo(i, withinRatio)}
+                onScrubStart={() => {
+                  if (hideControlsTimerRef.current != null) {
+                    window.clearTimeout(hideControlsTimerRef.current);
+                  }
+                  setControlsVisible(true);
+                }}
+                onScrubEnd={scheduleHideControls}
+              />
               <span className="clock">{formatClockTime(totalDurationMs)}</span>
               <span className="counter">
                 {index + 1}/{scenes.length}
