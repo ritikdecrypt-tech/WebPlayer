@@ -20,3 +20,5 @@ export function endingTailMusicVolume(baseVolume: number, progress: number): num
 // baseVolume * (1 - t * t * t)
 // Faster fade early
 // baseVolume * (1 - Math.sqrt(t))
+
+

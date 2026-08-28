@@ -12,52 +12,28 @@ import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
 
 const MUSIC_VOLUME = 0.22;
-/** Same speed steps as the native PlayerSu / PlayerMu / PlayerBi. */
-const RATES = [0.85, 1, 1.15] as const;
-/** Match the phone app default (PlayerSu starts at index 0 → 0.85x). */
-const DEFAULT_RATE_INDEX = 0;
+/** Shared stories always play at the generated file's original speed. */
+const NARRATION_RATE = 1;
 
 function isCoarsePointerDevice(): boolean {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(pointer: coarse), (hover: none)").matches;
 }
 
-/**
- * Apply narration speed. iOS Safari is unreliable about honoring playbackRate
- * on <audio>; we play narration through a hidden <video playsInline> and
- * re-assert rate on every playing/timeupdate tick (same 0.85 default as
- * the native PlayerSu setPlaybackRate).
- */
-function applyNarrationRate(el: HTMLMediaElement, rate: number) {
+/** Lock narration to original speed (1x). No speed control in the web player. */
+function lockNarrationRate(el: HTMLMediaElement) {
   try {
-    el.defaultPlaybackRate = rate;
+    el.defaultPlaybackRate = NARRATION_RATE;
   } catch {
     /* ignore */
   }
-  el.playbackRate = rate;
-  try {
-    (el as HTMLMediaElement & { preservesPitch?: boolean }).preservesPitch = true;
-  } catch {
-    /* older WebKit */
-  }
+  el.playbackRate = NARRATION_RATE;
 }
 
-/** Start or resume media at the given rate — pause→setRate→play is required on some iOS versions. */
-async function playMediaAtRate(el: HTMLMediaElement, rate: number): Promise<void> {
-  applyNarrationRate(el, rate);
-  try {
-    await el.play();
-  } catch (err) {
-    throw err;
-  }
-  applyNarrationRate(el, rate);
-  // If WebKit silently ignored the rate, force via pause/set/play once.
-  if (Math.abs(el.playbackRate - rate) > 0.01) {
-    el.pause();
-    applyNarrationRate(el, rate);
-    await el.play();
-    applyNarrationRate(el, rate);
-  }
+async function playNarration(el: HTMLMediaElement): Promise<void> {
+  lockNarrationRate(el);
+  await el.play();
+  lockNarrationRate(el);
 }
 
 type FullscreenDocument = Document & {
@@ -112,7 +88,6 @@ export default function StoryPlayer({ story }: Props) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [finished, setFinished] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [rateIndex, setRateIndex] = useState(DEFAULT_RATE_INDEX);
   const [imageFailed, setImageFailed] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -125,7 +100,6 @@ export default function StoryPlayer({ story }: Props) {
   const hideControlsTimerRef = useRef<number | null>(null);
   const indexRef = useRef(0);
   const isPlayingRef = useRef(false);
-  const rateRef = useRef<number>(RATES[DEFAULT_RATE_INDEX]);
   /** Bumped when we intentionally replace/tear down narration (seek, new scene, unmount) — not on pause. */
   const sceneTokenRef = useRef(0);
   const audioUnlockedRef = useRef(false);
@@ -138,7 +112,6 @@ export default function StoryPlayer({ story }: Props) {
 
   indexRef.current = index;
   isPlayingRef.current = isPlaying;
-  rateRef.current = RATES[rateIndex];
 
   const current = scenes[index] ?? null;
   const shotCount = current?.shots?.length || (current?.image_url ? 1 : 0);
@@ -147,11 +120,10 @@ export default function StoryPlayer({ story }: Props) {
   const activeImage =
     current?.shots?.[shotIndex]?.url ?? current?.image_url ?? null;
 
-  // EXACT same clock math as PlayerSu — text estimate at the selected rate.
-  // Do not use raw file duration here or the total diverges from the phone UI.
+  // Clock at original (1x) speed — same estimate formula as the app, without rate scaling.
   const sceneDurationsMs = useMemo(
-    () => scenes.map((s) => estimateSpeechDurationMs(s.text, RATES[rateIndex])),
-    [scenes, rateIndex],
+    () => scenes.map((s) => estimateSpeechDurationMs(s.text, NARRATION_RATE)),
+    [scenes],
   );
   const totalDurationMs = sceneDurationsMs.reduce((sum, d) => sum + d, 0);
   const elapsedDurationMs =
@@ -349,13 +321,12 @@ export default function StoryPlayer({ story }: Props) {
       }
 
       el.src = url;
-      applyNarrationRate(el, rateRef.current);
+      lockNarrationRate(el);
 
       el.ontimeupdate = () => {
         if (sceneTokenRef.current !== token) return;
-        // iOS Safari often silently resets playbackRate back to 1.
-        if (Math.abs(el.playbackRate - rateRef.current) > 0.01) {
-          applyNarrationRate(el, rateRef.current);
+        if (Math.abs(el.playbackRate - NARRATION_RATE) > 0.01) {
+          lockNarrationRate(el);
         }
         if (el.duration > 0) {
           setProgress(Math.min(1, el.currentTime / el.duration));
@@ -363,7 +334,7 @@ export default function StoryPlayer({ story }: Props) {
       };
       el.onplaying = () => {
         if (sceneTokenRef.current !== token) return;
-        applyNarrationRate(el, rateRef.current);
+        lockNarrationRate(el);
       };
       el.onended = () => {
         if (sceneTokenRef.current !== token) return;
@@ -380,10 +351,10 @@ export default function StoryPlayer({ story }: Props) {
 
       const start = () => {
         if (sceneTokenRef.current !== token) return;
-        void playMediaAtRate(el, rateRef.current).then(
+        void playNarration(el).then(
           () => {
             if (sceneTokenRef.current !== token) return;
-            applyNarrationRate(el, rateRef.current);
+            lockNarrationRate(el);
           },
           (err: unknown) => {
             if (sceneTokenRef.current !== token) return;
@@ -433,18 +404,17 @@ export default function StoryPlayer({ story }: Props) {
       el.currentTime > 0 &&
       Number.isFinite(el.duration)
     ) {
-      applyNarrationRate(el, rateRef.current);
+      lockNarrationRate(el);
       setIsPlaying(true);
       isPlayingRef.current = true;
       setFinished(false);
-      void playMediaAtRate(el, rateRef.current).then(
-        () => applyNarrationRate(el, rateRef.current),
+      void playNarration(el).then(
+        () => lockNarrationRate(el),
         () => {
           setIsPlaying(false);
           isPlayingRef.current = false;
         },
       );
-      // Music stays at 1x — same as the native player (only narration is rate-scaled).
       if (musicRef.current) {
         musicRef.current.playbackRate = 1;
         void musicRef.current.play().catch(() => {});
@@ -477,16 +447,6 @@ export default function StoryPlayer({ story }: Props) {
     if (isPlayingRef.current) pause();
     else play();
   }, [pause, play]);
-
-  const setPlaybackRateIndex = useCallback((nextIndex: number) => {
-    const clamped = ((nextIndex % RATES.length) + RATES.length) % RATES.length;
-    setRateIndex(clamped);
-    const rate = RATES[clamped];
-    rateRef.current = rate;
-    if (narrationElRef.current) {
-      applyNarrationRate(narrationElRef.current, rate);
-    }
-  }, []);
 
   const goTo = useCallback(
     (i: number) => {
@@ -678,8 +638,8 @@ export default function StoryPlayer({ story }: Props) {
         className={`player-shell${isImmersive ? " immersive" : ""}`}
         ref={shellRef}
       >
-        {/* Hidden video (not audio): iOS Safari honors playbackRate on video
-            far more reliably, which is how we match the phone's 0.85x default. */}
+        {/* Persistent hidden video element — more reliable pause/resume on iOS
+            than constructing a new Audio() per scene. */}
         <video
           ref={(el) => {
             narrationElRef.current = el;
@@ -746,17 +706,6 @@ export default function StoryPlayer({ story }: Props) {
                 {story.child_name ? ` · ${story.child_name}` : ""}
               </span>
             </div>
-            <button
-              type="button"
-              className="ghost-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setPlaybackRateIndex(rateIndex + 1);
-              }}
-              aria-label="Change playback speed"
-            >
-              {RATES[rateIndex] === 1 ? "1x" : `${RATES[rateIndex]}x`}
-            </button>
           </header>
 
           <div
