@@ -1,6 +1,7 @@
 /**
  * Playback timing helpers — MUST stay in lockstep with
  * kidz/src/utils/textToSpeech.ts or the web clock diverges from the phone app.
+ * Web Player always estimates at 0.85 (PlayerSu/Mu/Bi default).
  */
 
 // expo-speech / native player estimate: ~150 wpm at rate 1.0, scaled by rate.
