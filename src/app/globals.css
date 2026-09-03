@@ -73,10 +73,24 @@ body {
   object-fit: cover;
 }
 
+.scene-image-contain,
 .cinema.is-expanded .scene-image,
 .cinema.is-expanded .scene-motion {
   object-fit: contain;
   object-position: center;
+}
+
+.scene-crossfade,
+.scene-fade-layer,
+.scene-kb {
+  position: absolute;
+  inset: 0;
+}
+
+.scene-kb {
+  transform-origin: center center;
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .scene-placeholder {
@@ -211,6 +225,29 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.caption-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  padding: 16px 18px max(22px, env(safe-area-inset-bottom));
+  pointer-events: none;
+  transition: opacity 220ms ease, padding-bottom 220ms ease;
+}
+
+.caption-layer.hidden {
+  opacity: 0;
+}
+
+.caption-layer.visible {
+  opacity: 1;
+}
+
+.caption-layer.with-controls {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
 }
 
 .caption {

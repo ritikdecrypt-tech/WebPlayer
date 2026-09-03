@@ -36,6 +36,13 @@ export async function fetchSharedStory(shortCode: string): Promise<SharedStory> 
     throw new StoryPlayerFetchError("config_missing", 500);
   }
 
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
+    process.env.EXPO_PUBLIC_SUPABASE_URL?.trim();
+  if (!supabaseUrl) {
+    throw new StoryPlayerFetchError("config_missing", 500);
+  }
+
   return loadSharedStoryDirect(shortCode);
 }
 
@@ -52,7 +59,7 @@ export function errorMessageFor(code: StoryPlayerErrorCode): string {
     case "network_error":
       return "Couldn’t reach Kinora. Check your connection and try again.";
     case "config_missing":
-      return "Add SUPABASE_SERVICE_ROLE_KEY to web-player/.env.local, then restart npm run dev.";
+      return "Add NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to web-player/.env.local, then run npm run dev.";
     default:
       return "Something went wrong loading this story.";
   }

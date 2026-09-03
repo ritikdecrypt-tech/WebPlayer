@@ -16,6 +16,7 @@ import {
 import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
 import StoryProgressBar from "@/components/StoryProgressBar";
+import CrossfadeIllustration from "@/components/CrossfadeIllustration";
 
 const MUSIC_VOLUME = 0.22;
 
@@ -88,7 +89,7 @@ export default function StoryPlayer({ story }: Props) {
   const [finished, setFinished] = useState(false);
   const [progress, setProgress] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
-  const [controlsVisible, setControlsVisible] = useState(true);
+  const [controlsVisible, setControlsVisible] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isImmersive, setIsImmersive] = useState(false);
   const [showDedication, setShowDedication] = useState(true);
@@ -114,11 +115,17 @@ export default function StoryPlayer({ story }: Props) {
   isPlayingRef.current = isPlaying;
 
   const current = scenes[index] ?? null;
+  // Same storyboard timing as PlayerSu/Mu/Bi: split the real narration
+  // (currentTime/duration) evenly across every shot in this scene, in the
+  // order story_pages.shot_sequence assigned. A single leftover image_url
+  // is only used when the scene predates multi-shot.
   const shotCount = current?.shots?.length || (current?.image_url ? 1 : 0);
   const shotIndex =
     shotCount > 0 ? Math.min(shotCount - 1, Math.floor(progress * shotCount)) : 0;
   const activeImage =
     current?.shots?.[shotIndex]?.url ?? current?.image_url ?? null;
+  const activeShotType =
+    current?.shots?.[shotIndex]?.type ?? "wide_establishing";
 
   // Same clock math as PlayerSu/Mu/Bi at the app's locked 0.85x default.
   const sceneDurationsMs = useMemo(
@@ -236,7 +243,7 @@ export default function StoryPlayer({ story }: Props) {
       window.clearTimeout(hideControlsTimerRef.current);
     }
     hideControlsTimerRef.current = window.setTimeout(() => {
-      if (isPlayingRef.current) setControlsVisible(false);
+      setControlsVisible(false);
     }, 3200);
   }, []);
 
@@ -276,7 +283,6 @@ export default function StoryPlayer({ story }: Props) {
       setIsPlaying(true);
       isPlayingRef.current = true;
       setFinished(false);
-      showControls();
 
       const music = musicRef.current;
       if (music) {
@@ -380,7 +386,6 @@ export default function StoryPlayer({ story }: Props) {
 
     if (endingTailActiveRef.current) {
       beginEndingTail(endingTailRemainingMsRef.current);
-      showControls();
       return;
     }
 
@@ -417,12 +422,11 @@ export default function StoryPlayer({ story }: Props) {
         musicRef.current.playbackRate = 1;
         void musicRef.current.play().catch(() => {});
       }
-      showControls();
       return;
     }
 
     speakScene(indexRef.current, 0);
-  }, [scenes.length, speakScene, showControls, beginEndingTail, unlockAudio]);
+  }, [scenes.length, speakScene, beginEndingTail, unlockAudio]);
 
   const pause = useCallback(() => {
     if (endingTailActiveRef.current) {
@@ -612,6 +616,7 @@ export default function StoryPlayer({ story }: Props) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  const handleImageError = useCallback(() => setImageFailed(true), []);
   const expanded = isFullscreen || isImmersive;
 
   useEffect(() => {
@@ -703,26 +708,17 @@ export default function StoryPlayer({ story }: Props) {
           className={`cinema${expanded ? " is-expanded" : ""}`}
           onClick={() => {
             if (showDedication || finished) return;
-            if (!isPlayingRef.current) {
-              play();
-              return;
-            }
             if (controlsVisible) setControlsVisible(false);
             else showControls();
           }}
         >
-          {activeImage && !imageFailed ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              key={activeImage}
-              src={activeImage}
-              alt={current.title || story.title || "Story scene"}
-              className="scene-image"
-              onError={() => setImageFailed(true)}
-            />
-          ) : (
-            <div className="scene-placeholder" aria-hidden />
-          )}
+          <CrossfadeIllustration
+            imageUrl={activeImage && !imageFailed ? activeImage : null}
+            variant={index % 5}
+            shotType={activeShotType}
+            objectFit={expanded ? "contain" : "cover"}
+            onError={handleImageError}
+          />
 
           {current.motion_video_url && isPlaying && (
             <video
@@ -743,7 +739,7 @@ export default function StoryPlayer({ story }: Props) {
 
           <header
             className={`chrome top-chrome ${
-              !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
+              !showDedication && controlsVisible ? "visible" : "hidden"
             }`}
             onClick={(e) => e.stopPropagation()}
           >
@@ -758,8 +754,9 @@ export default function StoryPlayer({ story }: Props) {
 
           <div
             className={`chrome center-chrome ${
-              !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
+              !showDedication && controlsVisible ? "visible" : "hidden"
             }`}
+            onClick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
@@ -772,13 +769,20 @@ export default function StoryPlayer({ story }: Props) {
             </button>
           </div>
 
+          <div
+            className={`caption-layer ${
+              !showDedication && !finished ? "visible" : "hidden"
+            } ${controlsVisible ? "with-controls" : ""}`}
+          >
+            <p className="caption">{sanitizeForSpeech(current.text)}</p>
+          </div>
+
           <footer
             className={`chrome bottom-chrome ${
-              !showDedication && (controlsVisible || !isPlaying) ? "visible" : "hidden"
+              !showDedication && controlsVisible ? "visible" : "hidden"
             }`}
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="caption">{sanitizeForSpeech(current.text)}</p>
             <div className="progress-row">
               <span className="clock">{formatClockTime(elapsedDurationMs)}</span>
               <StoryProgressBar

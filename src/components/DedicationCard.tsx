@@ -19,7 +19,7 @@ export default function DedicationCard({
   onBegin,
 }: Props) {
   const name = childName.trim() || "a child";
-  const madeFor = formatNames(recipients);
+  const dedicatedTo = formatNames(recipients);
 
   return (
     <button
@@ -33,15 +33,13 @@ export default function DedicationCard({
       </span>
       <span className="dedication-kicker">A story by</span>
       <span className="dedication-name">{name}</span>
-      {madeFor ? (
+      {dedicatedTo ? (
         <>
-          <span className="dedication-for-label">Made for</span>
-          <span className="dedication-for">{madeFor}</span>
+          <span className="dedication-for-label">Dedicated to</span>
+          <span className="dedication-for">{dedicatedTo}</span>
+          {note ? <span className="dedication-note">{note}</span> : null}
         </>
-      ) : (
-        <span className="dedication-for-label">Made for {name}</span>
-      )}
-      {note ? <span className="dedication-note">{note}</span> : null}
+      ) : null}
       <span className="dedication-hint">Tap to begin</span>
     </button>
   );

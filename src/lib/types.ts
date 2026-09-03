@@ -1,4 +1,16 @@
-export type ShotType = "wide" | "medium" | "close";
+/** Matches the app's useStoryPlayer ShotType, plus legacy wide/medium/close keys. */
+export type ShotType =
+  | "wide_establishing"
+  | "extreme_wide"
+  | "close_up"
+  | "extreme_close_up"
+  | "over_shoulder"
+  | "low_angle_scale"
+  | "ultra_wide_action"
+  | "detail_vignette"
+  | "wide"
+  | "medium"
+  | "close";
 
 export type PlayerShot = {
   type: ShotType;

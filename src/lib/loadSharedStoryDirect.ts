@@ -12,7 +12,43 @@ const ILLUSTRATIONS_BUCKET = "illustrations";
 const NARRATIONS_BUCKET = "narrations";
 const MUSIC_BUCKET = "music_library";
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
-const SHOT_TYPE_ORDER: ShotType[] = ["wide", "medium", "close"];
+/** Older stories generated before shot_sequence used these three keys. */
+const LEGACY_SHOT_TYPE_ORDER: ShotType[] = ["wide", "medium", "close"];
+
+type ShotPath = { type: ShotType; path: string };
+type ShotsJson = Record<string, { storage_path?: string } | undefined>;
+
+/**
+ * Same order the app's useStoryPlayer uses: story_pages.shot_sequence first,
+ * then the legacy wide/medium/close keys, then any remaining stored shots.
+ * Looking only for "wide"/"medium"/"close" dropped every modern shot
+ * (wide_establishing, close_up, …) and left the player on a single image.
+ */
+function collectShotPaths(
+  shotsJson: ShotsJson | null,
+  shotSequence: unknown,
+): ShotPath[] {
+  if (!shotsJson) return [];
+
+  const fromKeys = (keys: string[]): ShotPath[] =>
+    keys
+      .map((type) => {
+        const path = shotsJson[type]?.storage_path;
+        return typeof path === "string" ? { type: type as ShotType, path } : null;
+      })
+      .filter((s): s is ShotPath => !!s);
+
+  const sequence = Array.isArray(shotSequence)
+    ? shotSequence.filter((t): t is string => typeof t === "string" && t.length > 0)
+    : [];
+  const fromSequence = fromKeys(sequence);
+  if (fromSequence.length > 0) return fromSequence;
+
+  const fromLegacy = fromKeys(LEGACY_SHOT_TYPE_ORDER);
+  if (fromLegacy.length > 0) return fromLegacy;
+
+  return fromKeys(Object.keys(shotsJson));
+}
 
 function titleFromNarration(text: string): string {
   const first = text.split(/[.!?]/)[0]?.trim() ?? text;
@@ -60,8 +96,10 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
     throw new StoryPlayerFetchError("invalid_short_code", 400);
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
+    process.env.EXPO_PUBLIC_SUPABASE_URL?.trim();
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 
   if (!supabaseUrl || !serviceKey) {
     throw new StoryPlayerFetchError("config_missing", 500);
@@ -101,7 +139,7 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
   const { data: pages, error: pagesError } = await supabase
     .from("story_pages")
     .select(`
-      id, page_number, narrative_text, mood, image_url, motion_video_path,
+      id, page_number, narrative_text, mood, image_url, motion_video_path, shot_sequence,
       illustrations(storage_path, thumbnail_path, status, shots),
       narrations(storage_path)
     `)
@@ -142,16 +180,10 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
 
     const shotsJson =
       illObj?.shots && typeof illObj.shots === "object"
-        ? (illObj.shots as Record<string, { storage_path?: string }>)
+        ? (illObj.shots as ShotsJson)
         : null;
 
-    let shotPaths: { type: ShotType; path: string }[] = [];
-    if (shotsJson) {
-      shotPaths = SHOT_TYPE_ORDER.map((type) => {
-        const path = shotsJson[type]?.storage_path;
-        return typeof path === "string" ? { type, path } : null;
-      }).filter((s): s is { type: ShotType; path: string } => !!s);
-    }
+    let shotPaths = collectShotPaths(shotsJson, p.shot_sequence);
 
     if (shotPaths.length === 0) {
       let path: string | null = typeof p.image_url === "string" ? p.image_url : null;
@@ -161,7 +193,7 @@ export async function loadSharedStoryDirect(shortCode: string): Promise<SharedSt
           (typeof illObj.storage_path === "string" ? illObj.storage_path : null) ??
           (typeof illObj.thumbnail_path === "string" ? illObj.thumbnail_path : null);
       }
-      if (path) shotPaths = [{ type: "wide", path }];
+      if (path) shotPaths = [{ type: "wide_establishing", path }];
     }
 
     const motionPath =
