@@ -668,7 +668,9 @@ export default function StoryPlayer({ story }: Props) {
   return (
     <div className={`player-stage${expanded ? " is-expanded" : ""}`}>
       <div
-        className={`player-shell${isImmersive ? " immersive" : ""}`}
+        className={`player-shell${isImmersive ? " immersive" : ""}${
+          showDedication || finished ? " has-overlay" : ""
+        }`}
         ref={shellRef}
       >
         {/* Hidden video: streams the same MP3 as the app. Video+playsInline is
@@ -769,14 +771,6 @@ export default function StoryPlayer({ story }: Props) {
             </button>
           </div>
 
-          <div
-            className={`caption-layer ${
-              !showDedication && !finished ? "visible" : "hidden"
-            } ${controlsVisible ? "with-controls" : ""}`}
-          >
-            <p className="caption">{sanitizeForSpeech(current.text)}</p>
-          </div>
-
           <footer
             className={`chrome bottom-chrome ${
               !showDedication && controlsVisible ? "visible" : "hidden"
@@ -812,6 +806,14 @@ export default function StoryPlayer({ story }: Props) {
           )}
         </div>
 
+        <div
+          className={`caption-layer ${
+            !showDedication && !finished ? "visible" : "hidden"
+          } ${controlsVisible ? "with-controls" : ""}`}
+        >
+          <p className="caption">{sanitizeForSpeech(current.text)}</p>
+        </div>
+
         {showDedication && !finished && (
           <DedicationCard
             childName={story.child_name}
@@ -823,33 +825,35 @@ export default function StoryPlayer({ story }: Props) {
 
         {finished && <EndCard onReplay={replay} />}
 
-        <button
-          type="button"
-          className="fullscreen-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            showControls();
-            void toggleFullscreen();
-          }}
-          aria-label={expanded ? "Exit full screen" : "Full screen"}
-          title={expanded ? "Exit full screen" : "Full screen"}
-        >
-          {expanded ? (
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <path
-                d="M9 3v2H5.8L9 8.2 7.6 9.6 4 6V9H2V3h7Zm6 0h7v6h-2V6l-3.6 3.6L15 8.2 18.2 5H15V3ZM4 15h2v3.2L9.2 15l1.4 1.4L7 20h3v2H3v-7Zm13.6-1.4L21 17.2V14h2v7h-7v-2h3.2L14.6 15l1.4-1.4Z"
-                fill="currentColor"
-              />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" aria-hidden>
-              <path
-                d="M3 3h7v2H5.8L9 8.2 7.6 9.6 4 6v4.2H2V3h1Zm12 0h7v7h-2V5.8L15.8 9 14.4 7.6 18 4h-3V3ZM3 14h2v4.2L8.2 15l1.4 1.4L6 20h4.2v2H3v-8Zm16 0h2v8h-8v-2H18l-3.2-3.2 1.4-1.4L20 18.2V14Z"
-                fill="currentColor"
-              />
-            </svg>
-          )}
-        </button>
+        {!showDedication && !finished && (
+          <button
+            type="button"
+            className="fullscreen-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              showControls();
+              void toggleFullscreen();
+            }}
+            aria-label={expanded ? "Exit full screen" : "Full screen"}
+            title={expanded ? "Exit full screen" : "Full screen"}
+          >
+            {expanded ? (
+              <svg viewBox="0 0 24 24" aria-hidden>
+                <path
+                  d="M9 3v2H5.8L9 8.2 7.6 9.6 4 6V9H2V3h7Zm6 0h7v6h-2V6l-3.6 3.6L15 8.2 18.2 5H15V3ZM4 15h2v3.2L9.2 15l1.4 1.4L7 20h3v2H3v-7Zm13.6-1.4L21 17.2V14h2v7h-7v-2h3.2L14.6 15l1.4-1.4Z"
+                  fill="currentColor"
+                />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden>
+                <path
+                  d="M3 3h7v2H5.8L9 8.2 7.6 9.6 4 6v4.2H2V3h1Zm12 0h7v7h-2V5.8L15.8 9 14.4 7.6 18 4h-3V3ZM3 14h2v4.2L8.2 15l1.4 1.4L6 20h4.2v2H3v-8Zm16 0h2v8h-8v-2H18l-3.2-3.2 1.4-1.4L20 18.2V14Z"
+                  fill="currentColor"
+                />
+              </svg>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );

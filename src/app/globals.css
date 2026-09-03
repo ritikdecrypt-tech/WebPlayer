@@ -420,6 +420,237 @@ body {
   }
 }
 
+@media (max-width: 767px) and (orientation: portrait) {
+  .player-stage:not(.is-expanded) {
+    min-height: 100dvh;
+    min-height: 100svh;
+    padding: 12px;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+  }
+
+  /* Taller card: 16:9 image stays 16:9; narration sits underneath.
+     Width is capped so image + caption still fit the screen. */
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) {
+    width: min(100%, calc((100dvh - 24px - 8.75rem) * 16 / 9));
+    max-width: 100%;
+    max-height: calc(100dvh - 24px);
+    aspect-ratio: auto;
+    height: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) .cinema {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    height: auto;
+    flex: 0 0 auto;
+  }
+
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) .cinema-veil.bottom {
+    display: none;
+  }
+
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) .caption-layer {
+    position: relative;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    z-index: 1;
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 8.75rem;
+    padding: 14px 16px 16px;
+    background: var(--cinema-panel);
+    overflow: hidden;
+  }
+
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) .caption-layer.with-controls {
+    padding-bottom: 16px;
+  }
+
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) .caption {
+    text-shadow: none;
+    max-width: none;
+    font-size: 1.08rem;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 5;
+    overflow: hidden;
+  }
+
+  .player-stage:not(.is-expanded) .player-shell:not(.immersive) .center-chrome {
+    top: 50%;
+  }
+
+  /* Start + end fill the phone. overflow:hidden on the 16:9 shell clips
+     position:fixed children, so expand the shell itself instead. */
+  .player-stage:not(.is-expanded) .player-shell.has-overlay:not(.immersive) {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    height: 100svh;
+    max-height: none;
+    aspect-ratio: auto;
+    border-radius: 0;
+    box-shadow: none;
+    display: block;
+  }
+
+  .player-stage:not(.is-expanded) .dedication-card,
+  .player-stage:not(.is-expanded) .end-card {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    overflow: auto;
+    padding: 16px 22px max(16px, env(safe-area-inset-bottom));
+  }
+
+  .player-stage:not(.is-expanded) .dedication-card {
+    gap: 6px;
+  }
+
+  .player-stage:not(.is-expanded) .dedication-mark {
+    margin-bottom: 4px;
+  }
+
+  .player-stage:not(.is-expanded) .dedication-name,
+  .player-stage:not(.is-expanded) .dedication-for {
+    font-size: clamp(1.55rem, 7vw, 2.15rem);
+  }
+
+  .player-stage:not(.is-expanded) .dedication-for-label {
+    margin-top: 10px;
+  }
+
+  .player-stage:not(.is-expanded) .dedication-note {
+    margin-top: 10px;
+  }
+
+  .player-stage:not(.is-expanded) .dedication-hint {
+    margin-top: 16px;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-content {
+    gap: 10px;
+    max-height: 100%;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-replay {
+    gap: 8px;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-art {
+    width: 108px;
+    height: 108px;
+    margin-bottom: 0;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-replay-icon {
+    width: 48px;
+    height: 48px;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-headline {
+    font-size: clamp(1.65rem, 6.5vw, 2.1rem);
+  }
+
+  .player-stage:not(.is-expanded) .endcard-sub {
+    font-size: 0.98rem;
+    line-height: 1.4;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-trial-tag {
+    margin-top: 0;
+    padding: 6px 14px;
+    font-size: 0.88rem;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-buttons {
+    margin-top: 0;
+    gap: 8px;
+  }
+
+  .player-stage:not(.is-expanded) .app-store-btn {
+    min-width: 124px;
+    padding: 9px 14px;
+  }
+
+  .player-stage:not(.is-expanded) .endcard-fineprint {
+    margin: 0;
+  }
+}
+
+/* Landscape phones: same full-screen start/end so Play Again isn't clipped. */
+@media (max-height: 500px) {
+  .player-stage:not(.is-expanded) .player-shell.has-overlay:not(.immersive) {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    height: 100svh;
+    max-height: none;
+    aspect-ratio: auto;
+    border-radius: 0;
+    box-shadow: none;
+    display: block;
+  }
+
+  .end-card {
+    padding: 12px 20px;
+  }
+
+  .endcard-content {
+    gap: 8px;
+  }
+
+  .endcard-replay {
+    flex-direction: row;
+    gap: 12px;
+  }
+
+  .endcard-art {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 0;
+  }
+
+  .endcard-replay-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .endcard-headline {
+    font-size: 1.45rem;
+  }
+
+  .endcard-sub {
+    font-size: 0.92rem;
+  }
+
+  .dedication-card {
+    padding: 12px 20px;
+    gap: 4px;
+  }
+
+  .dedication-mark {
+    margin-bottom: 0;
+  }
+
+  .dedication-hint {
+    margin-top: 10px;
+  }
+}
+
 .dedication-card {
   position: absolute;
   inset: 0;
