@@ -1,0 +1,16 @@
+{
+  "name": "Kinora",
+  "short_name": "Kinora",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#F4ECDD",
+  "theme_color": "#F4ECDD",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

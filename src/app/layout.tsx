@@ -20,6 +20,17 @@ export const metadata: Metadata = {
     template: "%s · Kinora",
   },
   description: "Watch stories made with Kinora — no app required.",
+  applicationName: "Kinora",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [{ url: "/icon.png", sizes: "1024x1024", type: "image/png" }],
+    apple: [{ url: "/icon.png", sizes: "1024x1024", type: "image/png" }],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Kinora",
+    statusBarStyle: "default",
+  },
 };
 
 export const viewport: Viewport = {

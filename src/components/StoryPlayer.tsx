@@ -13,6 +13,10 @@ import {
   applyMediaPlaybackRate,
   playMediaAtRate,
 } from "@/lib/narrationPlayback";
+import {
+  publishMediaPosition,
+  storyMediaMetadata,
+} from "@/lib/mediaSession";
 import EndCard from "@/components/EndCard";
 import DedicationCard from "@/components/DedicationCard";
 import StoryProgressBar from "@/components/StoryProgressBar";
@@ -67,9 +71,10 @@ function prefersPortraitCssFullscreen(): boolean {
   return window.matchMedia("(max-width: 768px), (pointer: coarse) and (hover: none)").matches;
 }
 
-function prepareMediaElement(el: HTMLMediaElement) {
+function prepareMediaElement(el: HTMLMediaElement, allowSystemControls: boolean) {
   el.setAttribute("playsinline", "true");
   el.setAttribute("webkit-playsinline", "true");
+  if (allowSystemControls) return;
   el.setAttribute("x-webkit-airplay", "deny");
   try {
     (el as HTMLMediaElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = true;
@@ -95,7 +100,7 @@ export default function StoryPlayer({ story }: Props) {
   const [showDedication, setShowDedication] = useState(true);
 
   const shellRef = useRef<HTMLDivElement | null>(null);
-  const narrationElRef = useRef<HTMLVideoElement | null>(null);
+  const narrationElRef = useRef<HTMLAudioElement | null>(null);
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
   const indexRef = useRef(0);
@@ -172,14 +177,6 @@ export default function StoryPlayer({ story }: Props) {
     endingTailRemainingMsRef.current = ENDING_TAIL_MS;
     restoreMusicVolume();
   }, [clearEndingFade, restoreMusicVolume]);
-
-  const pauseAllMedia = useCallback(() => {
-    narrationElRef.current?.pause();
-    musicRef.current?.pause();
-    clearEndingFade();
-    setIsPlaying(false);
-    isPlayingRef.current = false;
-  }, [clearEndingFade]);
 
   /** Mark media as unlocked by the user gesture. Do not pause in a later
    *  callback — that races the real play() and causes a silent first scene. */
@@ -312,6 +309,9 @@ export default function StoryPlayer({ story }: Props) {
         }
         if (el.duration > 0) {
           setProgress(Math.min(1, el.currentTime / el.duration));
+          if (typeof navigator !== "undefined" && navigator.mediaSession) {
+            publishMediaPosition(navigator.mediaSession, el, APP_NARRATION_RATE);
+          }
         }
       };
       el.onplaying = () => {
@@ -526,7 +526,7 @@ export default function StoryPlayer({ story }: Props) {
     music.volume = MUSIC_VOLUME;
     music.playbackRate = 1;
     music.defaultPlaybackRate = 1;
-    prepareMediaElement(music);
+    prepareMediaElement(music, false);
   }, [story.music_url]);
 
   useEffect(() => {
@@ -542,21 +542,132 @@ export default function StoryPlayer({ story }: Props) {
   }, [stopNarrationElement, clearEndingFade]);
 
   useEffect(() => {
-    const halt = () => {
-      pauseAllMedia();
+    const keepPlayingInBackground = () => {
+      if (!isPlayingRef.current) return;
+      const narration = narrationElRef.current;
+      if (
+        narration &&
+        narration.paused &&
+        !narration.ended &&
+        narration.getAttribute("src")
+      ) {
+        void narration.play().catch(() => {});
+      }
+      const music = musicRef.current;
+      if (music?.paused && music.getAttribute("src")) {
+        void music.play().catch(() => {});
+      }
     };
     const onVisibility = () => {
-      if (document.hidden) halt();
+      if (document.hidden) {
+        keepPlayingInBackground();
+        return;
+      }
+      if (!isPlayingRef.current) return;
+      keepPlayingInBackground();
+      document.querySelectorAll("video.scene-motion").forEach((node) => {
+        const video = node as HTMLVideoElement;
+        if (video.paused) void video.play().catch(() => {});
+      });
     };
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("pagehide", halt);
-    document.addEventListener("freeze", halt);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("pagehide", halt);
-      document.removeEventListener("freeze", halt);
     };
-  }, [pauseAllMedia]);
+  }, []);
+
+  useEffect(() => {
+    const session = navigator.mediaSession;
+    if (!session) return;
+
+    const setHandler = (
+      action: MediaSessionAction,
+      handler: MediaSessionActionHandler | null,
+    ) => {
+      try {
+        session.setActionHandler(action, handler);
+      } catch {
+        /* This browser does not support the action. */
+      }
+    };
+
+    setHandler("play", () => {
+      play();
+    });
+    setHandler("pause", () => {
+      pause();
+    });
+    setHandler("previoustrack", () => {
+      const i = indexRef.current;
+      const el = narrationElRef.current;
+      const nearStart = !el || !Number.isFinite(el.currentTime) || el.currentTime < 3;
+      if (nearStart && i > 0) goTo(i - 1, 0);
+      else goTo(i, 0);
+    });
+    setHandler("nexttrack", () => {
+      const i = indexRef.current;
+      if (i < scenes.length - 1) goTo(i + 1, 0);
+    });
+    setHandler("seekto", (details) => {
+      const el = narrationElRef.current;
+      const seekTime = details.seekTime;
+      if (!el || seekTime == null || !(el.duration > 0)) return;
+      goTo(indexRef.current, seekTime / el.duration);
+    });
+
+    return () => {
+      setHandler("play", null);
+      setHandler("pause", null);
+      setHandler("previoustrack", null);
+      setHandler("nexttrack", null);
+      setHandler("seekto", null);
+      session.metadata = null;
+      try {
+        session.playbackState = "none";
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [play, pause, goTo, scenes.length]);
+
+  useEffect(() => {
+    const session = navigator.mediaSession;
+    if (!session || typeof MediaMetadata === "undefined") return;
+
+    if (showDedication || finished || scenes.length === 0) {
+      session.metadata = null;
+      try {
+        session.playbackState = "none";
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    session.metadata = new MediaMetadata(
+      storyMediaMetadata({
+        title: story.title,
+        childName: story.child_name,
+        origin: window.location.origin,
+      }),
+    );
+    try {
+      session.playbackState = isPlaying ? "playing" : "paused";
+    } catch {
+      /* ignore */
+    }
+
+    const el = narrationElRef.current;
+    if (el) publishMediaPosition(session, el, APP_NARRATION_RATE);
+  }, [
+    story.title,
+    story.child_name,
+    isPlaying,
+    showDedication,
+    finished,
+    scenes.length,
+    index,
+  ]);
 
   useEffect(() => {
     const urls = [
@@ -673,16 +784,16 @@ export default function StoryPlayer({ story }: Props) {
         }`}
         ref={shellRef}
       >
-        {/* Hidden video: streams the same MP3 as the app. Video+playsInline is
-            how iOS Safari honors playbackRate at 0.85 without changing pitch. */}
-        <video
+        {/* Hidden audio: an <audio> element keeps playing after the phone
+            locks. <video> is paused by iOS/Android when the page is hidden,
+            so it never reaches the lock screen. Rate stays 0.85x with pitch
+            preserved via playMediaAtRate. */}
+        <audio
           ref={(el) => {
             narrationElRef.current = el;
-            if (el) prepareMediaElement(el);
+            if (el) prepareMediaElement(el, true);
           }}
-          playsInline
           preload="auto"
-          disablePictureInPicture
           className="narration-audio"
           aria-hidden
         />
@@ -691,7 +802,7 @@ export default function StoryPlayer({ story }: Props) {
             ref={(el) => {
               musicRef.current = el;
               if (el) {
-                prepareMediaElement(el);
+                prepareMediaElement(el, false);
                 el.volume = MUSIC_VOLUME;
                 el.playbackRate = 1;
                 el.defaultPlaybackRate = 1;
