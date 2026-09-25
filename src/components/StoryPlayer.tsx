@@ -115,6 +115,8 @@ export default function StoryPlayer({ story }: Props) {
   const pendingSeekRef = useRef<{ index: number; withinRatio: number } | null>(null);
   /** Debounce touch+click double-firing on iOS. */
   const lastToggleAtRef = useRef(0);
+  /** True when we paused because the page was hidden (phone locked). */
+  const resumeWhenVisibleRef = useRef(false);
 
   indexRef.current = index;
   isPlayingRef.current = isPlaying;
@@ -542,39 +544,47 @@ export default function StoryPlayer({ story }: Props) {
   }, [stopNarrationElement, clearEndingFade]);
 
   useEffect(() => {
-    const keepPlayingInBackground = () => {
+    const stopForLock = () => {
+      document.querySelectorAll("video.scene-motion").forEach((node) => {
+        (node as HTMLVideoElement).pause();
+      });
       if (!isPlayingRef.current) return;
-      const narration = narrationElRef.current;
-      if (
-        narration &&
-        narration.paused &&
-        !narration.ended &&
-        narration.getAttribute("src")
-      ) {
-        void narration.play().catch(() => {});
+      resumeWhenVisibleRef.current = true;
+      pause();
+      try {
+        navigator.mediaSession.playbackState = "paused";
+      } catch {
+        /* ignore */
       }
-      const music = musicRef.current;
-      if (music?.paused && music.getAttribute("src")) {
-        void music.play().catch(() => {});
-      }
+    };
+    const resumeAfterReturn = () => {
+      if (document.hidden || !resumeWhenVisibleRef.current) return;
+      resumeWhenVisibleRef.current = false;
+      play();
     };
     const onVisibility = () => {
-      if (document.hidden) {
-        keepPlayingInBackground();
-        return;
-      }
-      if (!isPlayingRef.current) return;
-      keepPlayingInBackground();
-      document.querySelectorAll("video.scene-motion").forEach((node) => {
-        const video = node as HTMLVideoElement;
-        if (video.paused) void video.play().catch(() => {});
-      });
+      if (document.hidden) stopForLock();
+      else resumeAfterReturn();
     };
+    const blockPlayWhileHidden = (event: Event) => {
+      if (!document.hidden) return;
+      (event.currentTarget as HTMLMediaElement).pause();
+    };
+    const narration = narrationElRef.current;
+    const music = musicRef.current;
+    narration?.addEventListener("play", blockPlayWhileHidden);
+    music?.addEventListener("play", blockPlayWhileHidden);
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", stopForLock);
+    window.addEventListener("pageshow", resumeAfterReturn);
     return () => {
+      narration?.removeEventListener("play", blockPlayWhileHidden);
+      music?.removeEventListener("play", blockPlayWhileHidden);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", stopForLock);
+      window.removeEventListener("pageshow", resumeAfterReturn);
     };
-  }, []);
+  }, [pause, play, story.music_url]);
 
   useEffect(() => {
     const session = navigator.mediaSession;
@@ -592,6 +602,8 @@ export default function StoryPlayer({ story }: Props) {
     };
 
     setHandler("play", () => {
+      if (document.hidden) return;
+      resumeWhenVisibleRef.current = false;
       play();
     });
     setHandler("pause", () => {
@@ -784,10 +796,7 @@ export default function StoryPlayer({ story }: Props) {
         }`}
         ref={shellRef}
       >
-        {/* Hidden audio: an <audio> element keeps playing after the phone
-            locks. <video> is paused by iOS/Android when the page is hidden,
-            so it never reaches the lock screen. Rate stays 0.85x with pitch
-            preserved via playMediaAtRate. */}
+        {/* Hidden audio: streams the narration MP3 at 0.85x with pitch preserved. */}
         <audio
           ref={(el) => {
             narrationElRef.current = el;
