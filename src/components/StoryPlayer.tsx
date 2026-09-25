@@ -117,6 +117,8 @@ export default function StoryPlayer({ story }: Props) {
   const lastToggleAtRef = useRef(0);
   /** True when we paused because the page was hidden (phone locked). */
   const resumeWhenVisibleRef = useRef(false);
+  /** Lock-screen Play opted in to playback while the phone stays locked. */
+  const allowHiddenPlaybackRef = useRef(false);
 
   indexRef.current = index;
   isPlayingRef.current = isPlaying;
@@ -545,6 +547,7 @@ export default function StoryPlayer({ story }: Props) {
 
   useEffect(() => {
     const stopForLock = () => {
+      allowHiddenPlaybackRef.current = false;
       document.querySelectorAll("video.scene-motion").forEach((node) => {
         (node as HTMLVideoElement).pause();
       });
@@ -567,7 +570,7 @@ export default function StoryPlayer({ story }: Props) {
       else resumeAfterReturn();
     };
     const blockPlayWhileHidden = (event: Event) => {
-      if (!document.hidden) return;
+      if (!document.hidden || allowHiddenPlaybackRef.current) return;
       (event.currentTarget as HTMLMediaElement).pause();
     };
     const narration = narrationElRef.current;
@@ -602,11 +605,20 @@ export default function StoryPlayer({ story }: Props) {
     };
 
     setHandler("play", () => {
-      if (document.hidden) return;
+      allowHiddenPlaybackRef.current = true;
       resumeWhenVisibleRef.current = false;
       play();
+      try {
+        navigator.mediaSession.playbackState = "playing";
+      } catch {
+        /* ignore */
+      }
     });
     setHandler("pause", () => {
+      if (allowHiddenPlaybackRef.current) {
+        allowHiddenPlaybackRef.current = false;
+        resumeWhenVisibleRef.current = false;
+      }
       pause();
     });
     setHandler("previoustrack", () => {
